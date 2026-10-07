@@ -16,6 +16,8 @@ export default defineConfig({
       WA_ACCESS_TOKEN: "fake_access_token",
       WA_APP_SECRET: "fake_secret_32chars_xxxxxxxxxxxxx",
       WA_VERIFY_TOKEN: "fake_verify_token",
+      INTERNAL_API_KEY: "dev_internal_key_for_tests_xxxxxxxx",
+      WA_GRAPH_VERSION: "v25.0",
       NODE_ENV: "test",
     },
     setupFiles: ["./src/__tests__/setup.ts"],

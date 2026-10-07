@@ -22,6 +22,13 @@ const envSchema = z.object({
   WA_APP_SECRET: z.string().min(1, "WA_APP_SECRET is required"),
   WA_VERIFY_TOKEN: z.string().min(1, "WA_VERIFY_TOKEN is required"),
 
+  // Internal service-to-service API key — protects /api/messages/send
+  // Generate with: openssl rand -hex 32
+  INTERNAL_API_KEY: z.string().min(16, "INTERNAL_API_KEY must be at least 16 chars"),
+
+  // Meta Graph API version — default v21.0, set to match your app dashboard
+  WA_GRAPH_VERSION: z.string().default("v21.0"),
+
   // Runtime
   NODE_ENV: z
     .enum(["development", "test", "production"])

@@ -21,6 +21,7 @@ import type {
   InboundContentType,
 } from "../types";
 import { ProviderError } from "../types";
+import { env } from "@/lib/env";
 import type {
   MetaWebhookPayload,
   MetaSendResponse,
@@ -30,7 +31,7 @@ import type {
   MetaMessage,
 } from "./payload-types";
 
-const GRAPH_BASE = "https://graph.facebook.com/v21.0";
+const GRAPH_BASE = `https://graph.facebook.com/${env.WA_GRAPH_VERSION}`;
 
 export class MetaCloudProvider implements WhatsAppProvider {
   private readonly phoneNumberId: string;

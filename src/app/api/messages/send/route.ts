@@ -4,6 +4,10 @@
  * Enqueues an outbound message for delivery with bounded retries.
  * Returns the DB message id immediately; actual sending happens in the worker.
  *
+ * Auth: requires `x-internal-api-key` header matching INTERNAL_API_KEY env var.
+ * This is a service-to-service endpoint — it should never be called directly
+ * from a browser client.
+ *
  * Body schema:
  * {
  *   organizationId: string
@@ -14,10 +18,28 @@
  */
 import { type NextRequest } from "next/server";
 import { z } from "zod";
+import { timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { sendQueue } from "@/queues";
+import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
+
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+
+function checkApiKey(request: NextRequest): boolean {
+  const provided = request.headers.get("x-internal-api-key") ?? "";
+  const expected = env.INTERNAL_API_KEY;
+  // timingSafeEqual prevents timing attacks; requires equal-length buffers
+  try {
+    return timingSafeEqual(
+      Buffer.from(provided.padEnd(expected.length)),
+      Buffer.from(expected)
+    ) && provided.length === expected.length;
+  } catch {
+    return false;
+  }
+}
 
 // ─── Request validation ───────────────────────────────────────────────────────
 
@@ -31,6 +53,11 @@ const sendSchema = z.object({
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  if (!checkApiKey(request)) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -48,7 +75,7 @@ export async function POST(request: NextRequest) {
 
   const { organizationId, conversationId, contentType, content } = parsed.data;
 
-  // Verify conversation belongs to this organization
+  // Verify conversation belongs to this organization (org-scoping)
   const conversation = await prisma.conversation.findFirst({
     where: { id: conversationId, organizationId },
     include: { contact: true },

@@ -43,3 +43,20 @@ export const sendQueue = new Queue<SendMessageJobData>("whatsapp-send", {
     removeOnFail: { count: 200 },
   },
 });
+
+// ─── Sweeper queue ────────────────────────────────────────────────────────────
+// Picks up webhook_events that were persisted to DB but never enqueued
+// (e.g. Redis was down at the time of the original request).
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface SweeperJobData {}
+
+export const sweeperQueue = new Queue<SweeperJobData>("whatsapp-sweeper", {
+  connection: redis,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: 5000 },
+    removeOnComplete: { count: 10 },
+    removeOnFail: { count: 20 },
+  },
+});
