@@ -1,0 +1,244 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core multi-tenant tables
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users         User[]
+  companies     Company[]
+  contacts      Contact[]
+  conversations Conversation[]
+  messages      Message[]
+  webhookEvents WebhookEvent[]
+  auditEvents   AuditEvent[]
+
+  @@map("organizations")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String   @unique
+  name           String
+  role           UserRole @default(AGENT)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  auditEvents  AuditEvent[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+enum UserRole {
+  ADMIN
+  AGENT
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Business entities
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Company {
+  id             String      @id @default(cuid())
+  organizationId String
+  name           String
+  type           CompanyType
+  gst            String?     // GST registration number
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contacts     Contact[]
+
+  @@index([organizationId])
+  @@index([organizationId, type])
+  @@map("companies")
+}
+
+enum CompanyType {
+  TRADER
+  RECYCLER
+}
+
+model Contact {
+  id             String          @id @default(cuid())
+  organizationId String
+  companyId      String?
+  waPhone        String          // WhatsApp phone number in E.164 format
+  name           String?
+  // Opt-in tracking
+  optInSource    OptInSource
+  optInAt        DateTime        @default(now())
+  optInScope     String          // e.g. "transaction_updates,lot_alerts"
+  optedOut       Boolean         @default(false)
+  optedOutAt     DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  company       Company?       @relation(fields: [companyId], references: [id])
+  conversations Conversation[]
+
+  @@unique([organizationId, waPhone])
+  @@index([organizationId])
+  @@map("contacts")
+}
+
+enum OptInSource {
+  WEB_FORM
+  QR_CODE
+  AGENT_ADDED
+  INBOUND_MESSAGE // contact messaged us first
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Messaging
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Conversation {
+  id             String             @id @default(cuid())
+  organizationId String
+  contactId      String
+  waPhone        String             // denormalised for fast lookup
+  status         ConversationStatus @default(OPEN)
+  // 24-hour service window: last inbound message timestamp
+  lastInboundAt  DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id])
+  messages     Message[]
+
+  @@unique([organizationId, contactId])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@map("conversations")
+}
+
+enum ConversationStatus {
+  OPEN
+  RESOLVED
+  EXPIRED // 24-hour window closed
+}
+
+model Message {
+  id             String          @id @default(cuid())
+  organizationId String
+  conversationId String
+  // Provider tracking
+  providerId     String?         @unique // WA message id (wamid); null until sent
+  direction      MessageDirection
+  // Content
+  contentType    MessageContentType
+  content        Json            // typed per contentType; see providers/types.ts
+  // Status lifecycle
+  status         MessageStatus   @default(PENDING)
+  failureReason  String?
+  retryCount     Int             @default(0)
+  // Linked entity (lot, bid, etc.) — nullable until those modules are built
+  linkedEntityType String?
+  linkedEntityId   String?
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  readAt         DateTime?
+  failedAt       DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([organizationId])
+  @@index([conversationId])
+  @@index([providerId])
+  @@map("messages")
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageContentType {
+  TEXT
+  TEMPLATE
+  INTERACTIVE
+  IMAGE
+  DOCUMENT
+  AUDIO
+  VIDEO
+  STICKER
+  LOCATION
+  CONTACTS
+  REACTION
+  UNKNOWN
+}
+
+enum MessageStatus {
+  PENDING    // queued, not yet sent
+  SENT       // accepted by provider
+  DELIVERED  // delivered to device
+  READ       // read by recipient
+  FAILED     // terminal failure
+  DEAD       // exceeded retries — dead-letter state
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Webhook events — raw storage, idempotency key = providerEventId
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WebhookEvent {
+  id              String              @id @default(cuid())
+  organizationId  String?             // may be unknown before processing
+  providerEventId String              @unique // Meta: messaging[].id or status.id
+  provider        String              @default("meta")
+  rawPayload      Json
+  processed       Boolean             @default(false)
+  processedAt     DateTime?
+  processingError String?
+  createdAt       DateTime            @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
+  @@index([processed])
+  @@map("webhook_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit trail
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AuditEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?  // null for system actions
+  action         String   // e.g. "message.sent", "contact.opted_out"
+  entityType     String   // e.g. "Message", "Contact"
+  entityId       String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id])
+
+  @@index([organizationId])
+  @@index([organizationId, entityType, entityId])
+  @@map("audit_events")
+}
