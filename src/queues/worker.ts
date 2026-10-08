@@ -57,8 +57,7 @@ export const webhookWorker = new Worker<WebhookJobData>(
       if (parsed.kind === "message") {
         await processInboundMessage(parsed, event.organizationId);
       } else {
-        // Fix 4: throw so BullMQ retries if the message row doesn't exist yet
-        await processStatusUpdate(parsed);
+        await processStatusUpdate(parsed, job.attemptsMade);
       }
     }
 
@@ -76,7 +75,7 @@ webhookWorker.on("failed", (job, err) => {
 
 // ─── Inbound message processing ───────────────────────────────────────────────
 
-async function processInboundMessage(
+export async function processInboundMessage(
   parsed: Extract<import("@/providers/types").ParsedWebhookEvent, { kind: "message" }>,
   organizationId: string | null
 ) {
@@ -123,6 +122,7 @@ async function processInboundMessage(
   });
 
   // Save inbound message — idempotent via providerId unique constraint
+  let messageAlreadySaved = false;
   try {
     await prisma.message.create({
       data: {
@@ -137,19 +137,25 @@ async function processInboundMessage(
     });
   } catch (err) {
     if (isPrismaError(err, "P2002")) {
-      console.info(`[WebhookWorker] Message ${parsed.providerId} already saved`);
-      return;
+      // Message already saved on a previous delivery of this webhook.
+      // Do NOT return — we must still run the bot so the reply is sent.
+      console.info(`[WebhookWorker] Message ${parsed.providerId} already saved, continuing to bot`);
+      messageAlreadySaved = true;
+    } else {
+      throw err;
     }
-    throw err;
   }
 
   // ── Bot dispatch ────────────────────────────────────────────────────────────
-  // Fetch the updated conversation (has fresh lastInboundAt)
+  // Fetch the updated conversation (has fresh lastInboundAt).
+  // Run even when the message was already saved — the enqueueReply dedupeKey
+  // ensures no second WhatsApp message is sent.
   const freshConversation = await prisma.conversation.findUniqueOrThrow({
     where: { id: conversation.id },
   });
 
   try {
+    console.info("[Onboarding] start", { contactId: contact.id });
     await handleOnboarding({
       orgId,
       contact: { id: contact.id, waPhone: contact.waPhone },
@@ -160,8 +166,8 @@ async function processInboundMessage(
       parsed,
     });
   } catch (err) {
-    // Bot errors must never crash the worker — log and continue
-    console.error("[WebhookWorker] Bot error (non-fatal):", (err as Error).message);
+    // Bot errors must never crash the worker — the inbound message is already saved.
+    console.error("[Onboarding] failed", { contactId: contact.id, err: (err as Error).message });
   }
 }
 
@@ -186,19 +192,26 @@ async function upsertContact(orgId: string, waPhone: string) {
 }
 
 // ─── Status update processing ─────────────────────────────────────────────────
-// Fix 4: Throw (not return) when the message row isn't found yet.
-// This happens when a status webhook arrives before the send-worker has saved
-// the providerId. BullMQ will retry with exponential backoff.
+// Throw for unknown message only while attemptsMade < 3 so BullMQ retries
+// (handles the race where status arrives before send-worker saves providerId).
+// After 3 attempts log one warning and return so the job is marked complete.
 
-async function processStatusUpdate(
-  parsed: Extract<import("@/providers/types").ParsedWebhookEvent, { kind: "status" }>
+export async function processStatusUpdate(
+  parsed: Extract<import("@/providers/types").ParsedWebhookEvent, { kind: "status" }>,
+  attemptsMade = 0
 ) {
   const message = await prisma.message.findUnique({ where: { providerId: parsed.providerId } });
   if (!message) {
-    // Throw — not UnrecoverableError — so BullMQ retries
-    throw new Error(
-      `[WebhookWorker] Status update for unknown message ${parsed.providerId} — will retry`
+    if (attemptsMade < 3) {
+      throw new Error(
+        `[WebhookWorker] Status update for unknown message ${parsed.providerId} — will retry (attempt ${attemptsMade + 1})`
+      );
+    }
+    // Exhausted retries — log and move on, don't fail the job permanently
+    console.warn(
+      `[WebhookWorker] Status update for unknown message ${parsed.providerId} after ${attemptsMade} attempts — giving up`
     );
+    return;
   }
 
   const updates: Record<string, unknown> = {};
