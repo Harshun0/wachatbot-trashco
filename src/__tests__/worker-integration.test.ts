@@ -29,11 +29,16 @@ vi.mock("@/lib/prisma", () => ({
       update: vi.fn(),
       findUniqueOrThrow: vi.fn(),
     },
-    message: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+    message: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn(), findMany: vi.fn() },
     party: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     webhookEvent: { findUnique: vi.fn(), update: vi.fn() },
+    listing: { findFirst: vi.fn(), findUnique: vi.fn(), count: vi.fn(), create: vi.fn(), update: vi.fn() },
+    requirement: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   },
 }));
+
+vi.mock("@/bot/extractor", () => ({ extractIntent: vi.fn() }));
+vi.mock("@/bot/rate-limit", () => ({ allowLLMCall: vi.fn().mockResolvedValue(true) }));
 
 vi.mock("@/queues", () => ({
   sendQueue: { add: vi.fn() },
@@ -56,6 +61,7 @@ import { prisma } from "@/lib/prisma";
 import { sendQueue } from "@/queues";
 import { processInboundMessage, processStatusUpdate } from "@/queues/worker";
 import { BTN } from "@/bot/onboarding";
+import { extractIntent } from "@/bot/extractor";
 
 // ─── Typed mock accessors ─────────────────────────────────────────────────────
 
@@ -65,9 +71,11 @@ type M = ReturnType<typeof vi.fn<any>>;
 const org  = prisma.organization as unknown as { findFirst: M };
 const cont = prisma.contact      as unknown as { upsert: M };
 const conv = prisma.conversation as unknown as { findUnique: M; create: M; update: M; findUniqueOrThrow: M };
-const msg  = prisma.message      as unknown as { create: M; findUnique: M; update: M };
+const msg  = prisma.message      as unknown as { create: M; findUnique: M; update: M; findMany: M };
 const pty  = prisma.party        as unknown as { findUnique: M; create: M; update: M };
+const list = prisma.listing      as unknown as { findFirst: M; findUnique: M; count: M; create: M; update: M };
 const qadd = sendQueue.add       as M;
+const mockedExtractIntent = extractIntent as unknown as M;
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -130,6 +138,7 @@ function setupHappyPath() {
   conv.findUniqueOrThrow.mockResolvedValue({ ...CONV_ROW, lastInboundAt: new Date() });
   msg.findUnique.mockResolvedValue(null);
   msg.update.mockResolvedValue({});
+  msg.findMany.mockResolvedValue([]);
   qadd.mockResolvedValue(undefined);
 }
 
@@ -295,6 +304,83 @@ describe("processStatusUpdate — message found", () => {
       expect.objectContaining({
         data: expect.objectContaining({ status: "FAILED", failureReason: "Re-engagement required" }),
       })
+    );
+  });
+});
+
+// ─── 7. Phase 2 — real Meta inbound payload through processInboundMessage ────
+// A registered SELLER sends a product message in the exact content shape Meta
+// delivers (msg.text.body), end to end: contact/conversation upsert → message
+// save → handleOnboarding → routeRegisteredUser → draft Listing created.
+
+describe("processInboundMessage — Phase 2 seller listing (real Meta payload shape)", () => {
+  const SELLER_PARTY = {
+    id: "party_seller_1",
+    contactId: "contact_1",
+    organizationId: ORG_ID,
+    onboardingStep: "DONE",
+    role: "SELLER",
+  };
+
+  function metaTextMsg(body: string, msgId = "wamid_listing_001"): InternalInboundMessage {
+    return {
+      kind: "message",
+      providerEventId: `msg_${msgId}`,
+      providerId: msgId,
+      fromPhone: FROM,
+      toPhone: "+919900000000",
+      timestamp: new Date(),
+      contentType: "text",
+      // Exact shape MetaCloudProvider.parseWebhook extracts for msg.type === "text"
+      content: { body },
+    };
+  }
+
+  it("'100 ton cement bags sell karna hai' → creates DRAFT listing and asks for quantity", async () => {
+    msg.create.mockReset();
+    msg.create.mockResolvedValue({ id: "msg_reply_1" });
+    pty.findUnique.mockResolvedValue(SELLER_PARTY);
+    list.findFirst.mockResolvedValue(null); // no existing draft/open listing
+    list.count.mockResolvedValue(0);
+    list.findUnique.mockResolvedValue(null); // LST-0001 is free
+    list.create.mockResolvedValue({
+      id: "listing_1",
+      code: "LST-0001",
+      product: "cement",
+      quantity: 100,
+      unit: null,
+      pricePerUnit: null,
+      location: null,
+      status: "DRAFT",
+    });
+    mockedExtractIntent.mockResolvedValue({
+      intent: "create_listing",
+      product: "cement",
+      category: null,
+      quantity: 100,
+      unit: null,
+      price: null,
+      location: null,
+      listingCode: null,
+      missing: ["unit", "price", "location"],
+    });
+
+    await processInboundMessage(metaTextMsg("100 ton cement bags sell karna hai"), ORG_ID);
+
+    expect(list.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          organizationId: ORG_ID,
+          sellerPartyId: "party_seller_1",
+          code: "LST-0001",
+          product: "cement",
+        }),
+      })
+    );
+    expect(qadd).toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({ content: expect.objectContaining({ body: expect.stringContaining("quantity") }) }),
+      expect.anything()
     );
   });
 });

@@ -16,11 +16,12 @@ import type { Party } from "@prisma/client";
 import type { InternalInboundMessage } from "@/providers/types";
 import { enqueueReply, buildButtons, buildText } from "./helpers";
 import { callLLM } from "./llm";
+import { routeRegisteredUser } from "./listings";
 import { z } from "zod";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface BotContext {
+export interface BotContext {
   orgId: string;
   contact: { id: string; waPhone: string };
   conversation: { id: string; lastInboundAt: Date | null };
@@ -37,6 +38,17 @@ export const BTN = {
   ALERT_ALL:    "alert_all",
   ALERT_MATCH:  "alert_match",
   ALERT_NONE:   "alert_none",
+
+  // Phase 2 — listings & requirements
+  LISTING_PUBLISH:    "listing_publish",
+  LISTING_ADD_PHOTO:  "listing_add_photo",
+  LISTING_EDIT:       "listing_edit",
+  REQ_ADD_DETAILS:    "req_add_details",
+  REQ_CLOSE:          "req_close",
+  MENU_LIST_PRODUCT:  "menu_list_product",
+  MENU_MY_LISTINGS:   "menu_my_listings",
+  MENU_REQUEST_PRODUCT: "menu_request_product",
+  MENU_MY_REQUESTS:   "menu_my_requests",
 } as const;
 
 // ─── Entry point (called from worker) ────────────────────────────────────────
@@ -223,8 +235,10 @@ async function handleDone(ctx: BotContext, party: Party): Promise<void> {
 
   if (greetings.some((g) => text.startsWith(g))) {
     await sendRegisteredMenu(ctx, party);
+    return;
   }
-  // Other messages in DONE state are handled by the Phase 2 listing/requirement flow
+
+  await routeRegisteredUser(ctx, party);
 }
 
 // ─── Message builders ─────────────────────────────────────────────────────────
@@ -235,12 +249,12 @@ async function sendAskRole(ctx: BotContext, partyId: string): Promise<void> {
     conversationId: ctx.conversation.id,
     to: ctx.contact.waPhone,
     content: buildButtons(
-      "Welcome to the marketplace! 🛒\n\nAre you looking to *sell* products or *buy* them?",
+      "Namaste! 🙏 Main aapka marketplace assistant hoon.\n\nAap bechna chahte hain ya khareedna?",
       [
-        { id: BTN.ROLE_SELLER, title: "Seller 🏭" },
-        { id: BTN.ROLE_BUYER,  title: "Buyer 🛍️" },
+        { id: BTN.ROLE_SELLER, title: "Bechna hai 🏭" },
+        { id: BTN.ROLE_BUYER,  title: "Khareedna hai 🛍️" },
       ],
-      "Type 'restart' anytime to start over"
+      "Kabhi bhi 'restart' likh ke dobara shuru kar sakte hain"
     ),
     dedupeKey: `onboard_role_${ctx.parsed.providerId}_${partyId}`,
   });
@@ -248,8 +262,8 @@ async function sendAskRole(ctx: BotContext, partyId: string): Promise<void> {
 
 async function sendAskName(ctx: BotContext, partyId: string, hint = false): Promise<void> {
   const body = hint
-    ? "Please tell me your name. For example: *Rahul Sharma*"
-    : "Great! What's your name? 😊";
+    ? "Bas apna name bata dijiye, jaise: *Rahul Sharma*"
+    : "Badhiya! Apna name kya bataayenge? 😊";
   await enqueueReply({
     organizationId: ctx.orgId,
     conversationId: ctx.conversation.id,
@@ -261,8 +275,8 @@ async function sendAskName(ctx: BotContext, partyId: string, hint = false): Prom
 
 async function sendAskCity(ctx: BotContext, partyId: string, hint = false): Promise<void> {
   const body = hint
-    ? "Please share your city. For example: *Mumbai*"
-    : "Which city are you based in? 📍";
+    ? "Apne city ka naam bata dijiye, jaise: *Mumbai*"
+    : "Aap kis city se hain? 📍";
   await enqueueReply({
     organizationId: ctx.orgId,
     conversationId: ctx.conversation.id,
@@ -274,16 +288,16 @@ async function sendAskCity(ctx: BotContext, partyId: string, hint = false): Prom
 
 async function sendAskAlerts(ctx: BotContext, partyId: string, hint = false): Promise<void> {
   const body = hint
-    ? "Please choose one of the options below 👇"
-    : "Last step! How would you like to receive alerts? 🔔";
+    ? "Neeche diye gaye options mein se ek chuniye 👇"
+    : "Ek aakhri baat — naye listings ke alerts kaise chahiye? 🔔";
   await enqueueReply({
     organizationId: ctx.orgId,
     conversationId: ctx.conversation.id,
     to: ctx.contact.waPhone,
     content: buildButtons(body, [
-      { id: BTN.ALERT_ALL,   title: "All listings" },
-      { id: BTN.ALERT_MATCH, title: "Only matching" },
-      { id: BTN.ALERT_NONE,  title: "No alerts" },
+      { id: BTN.ALERT_ALL,   title: "Sab listings" },
+      { id: BTN.ALERT_MATCH, title: "Sirf matching" },
+      { id: BTN.ALERT_NONE,  title: "Alerts nahi" },
     ]),
     dedupeKey: `onboard_alerts_${ctx.parsed.providerId}_${partyId}`,
   });
@@ -293,23 +307,23 @@ async function sendDone(ctx: BotContext, party: Party): Promise<void> {
   const role = party.role === "SELLER" ? "Seller" : "Buyer";
   const alertMsg =
     party.alertPreference === "ALL"
-      ? "You'll get alerts for all new listings."
+      ? "Aapko har nayi listing ka alert milega."
       : party.alertPreference === "MATCHING_ONLY"
-      ? "You'll get alerts only for matching products."
-      : "You won't receive alerts (you can change this anytime).";
+      ? "Aapko sirf matching products ka alert milega."
+      : "Aapko koi alert nahi milega (jab chaho badal sakte ho).";
 
   await enqueueReply({
     organizationId: ctx.orgId,
     conversationId: ctx.conversation.id,
     to: ctx.contact.waPhone,
     content: buildText(
-      `✅ You're all set, ${party.name ?? "there"}!\n\n` +
+      `✅ Perfect, ${party.name ?? "dost"}! Aapka profile ban gaya.\n\n` +
         `*Role:* ${role}\n` +
         `*City:* ${party.city ?? "—"}\n` +
         `*Alerts:* ${alertMsg}\n\n` +
         (party.role === "SELLER"
-          ? "You can now list a product. Just tell me what you want to sell! 📦"
-          : "You can now search for products. Tell me what you need! 🔍")
+          ? "Ab batayiye — aapko kya bechna hai, kitni quantity aur kitne mein? Bas product bata dijiye, baaki main ek-ek karke pooch lunga! 📦"
+          : "Ab batayiye — aapko kya chahiye aur kitne mein? Product bata dijiye, main turant request bana dunga aur match milte hi batadunga! 🔍")
     ),
     dedupeKey: `onboard_done_${ctx.parsed.providerId}_${party.id}`,
   });
@@ -319,15 +333,15 @@ async function sendRegisteredMenu(ctx: BotContext, party: Party): Promise<void> 
   const role = party.role === "SELLER" ? "Seller" : "Buyer";
   const action =
     party.role === "SELLER"
-      ? "Tell me what you want to list and I'll help you post it."
-      : "Tell me what product you're looking for.";
+      ? "Bas batayiye aapko kya bechna hai, kitni quantity aur kitne mein — main list kar dunga!"
+      : "Batayiye aapko kya chahiye aur kitne mein — main dhoondh ke laata hoon!";
 
   await enqueueReply({
     organizationId: ctx.orgId,
     conversationId: ctx.conversation.id,
     to: ctx.contact.waPhone,
     content: buildText(
-      `Hi ${party.name ?? "there"}! 👋\n\nYou're registered as a *${role}*.\n\n${action}\n\n_Type 'restart' to redo your profile._`
+      `Namaste ${party.name ?? "dost"}! 👋\n\nAap humare paas *${role}* registered hain.\n\n${action}\n\n_Profile dobara set karni ho to 'restart' likhiye._`
     ),
     dedupeKey: `menu_${ctx.parsed.providerId}_${party.id}`,
   });

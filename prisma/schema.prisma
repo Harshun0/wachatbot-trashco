@@ -25,6 +25,8 @@ model Organization {
   webhookEvents WebhookEvent[]
   auditEvents   AuditEvent[]
   parties       Party[]
+  listings      Listing[]
+  requirements  Requirement[]
 
   @@map("organizations")
 }
@@ -243,6 +245,8 @@ model Party {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  listings     Listing[]
+  requirements Requirement[]
 
   @@index([organizationId])
   @@index([organizationId, role])
@@ -266,6 +270,86 @@ enum AlertPreference {
   ALL
   MATCHING_ONLY
   NONE
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace bot — listings & requirements
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Listing {
+  id             String        @id @default(cuid())
+  organizationId String
+  sellerPartyId  String
+  code           String        // LST-0001, sequential per org
+  product        String
+  category       String?
+  quantity       Decimal?      // nullable: DRAFT listings start with product only, filled in step by step
+  unit           String?
+  pricePerUnit   Decimal?
+  currency       String        @default("INR")
+  location       String?
+  description    String?
+  status         ListingStatus @default(DRAFT)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sellerParty  Party         @relation(fields: [sellerPartyId], references: [id], onDelete: Cascade)
+  media        ListingMedia[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([sellerPartyId])
+  @@map("listings")
+}
+
+enum ListingStatus {
+  DRAFT
+  OPEN
+  CLOSED
+}
+
+model ListingMedia {
+  id              String   @id @default(cuid())
+  listingId       String
+  whatsappMediaId String
+  storageUrl      String?
+  mimeType        String?
+  createdAt       DateTime @default(now())
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@index([listingId])
+  @@map("listing_media")
+}
+
+model Requirement {
+  id             String            @id @default(cuid())
+  organizationId String
+  buyerPartyId   String
+  product        String
+  category       String?
+  quantity       Decimal?
+  unit           String?
+  maxPrice       Decimal?
+  location       String?
+  status         RequirementStatus @default(OPEN)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  buyerParty   Party        @relation(fields: [buyerPartyId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([buyerPartyId])
+  @@map("requirements")
+}
+
+enum RequirementStatus {
+  OPEN
+  CLOSED
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

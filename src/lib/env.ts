@@ -37,6 +37,8 @@ const envSchema = z.object({
   CLAUDE_API_KEY: z.string().optional(),
   // LLM model override — defaults chosen per provider if not set
   LLM_MODEL: z.string().optional(),
+  // Max LLM calls per party per minute — avoids cost spikes from one chatty user
+  LLM_MAX_PER_MINUTE: z.coerce.number().int().min(1).default(10),
 
   // Runtime
   NODE_ENV: z
