@@ -8,6 +8,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifyToken, SESSION_COOKIE } from "@/lib/session";
+import { env } from "@/lib/env";
 
 const PUBLIC_PATHS = ["/dashboard/login", "/dashboard/magic", "/dashboard/expired"];
 
@@ -22,7 +23,9 @@ export function proxy(request: NextRequest) {
   const session = token ? verifyToken(token) : null;
 
   if (!session) {
-    return NextResponse.redirect(new URL("/dashboard/login", request.url));
+    // Build from APP_URL, not request.url — behind Render's proxy, request.url
+    // resolves to the internal localhost:10000 address, not the public host.
+    return NextResponse.redirect(new URL("/dashboard/login", env.APP_URL));
   }
 
   return NextResponse.next();
