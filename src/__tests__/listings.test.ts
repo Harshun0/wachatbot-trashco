@@ -523,3 +523,32 @@ describe("Extractor failure", () => {
     );
   });
 });
+
+// ─── 13. "dashboard" keyword → magic link, no LLM call ────────────────────────
+
+describe("Dashboard link keyword", () => {
+  it("seller sends 'dashboard' → gets a /dashboard/magic link, no extractIntent call", async () => {
+    await routeRegisteredUser(ctx(textMsg("dashboard")), sellerParty());
+
+    expect(mockedExtractIntent).not.toHaveBeenCalled();
+    expect(queueAdd).toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({
+        content: expect.objectContaining({ body: expect.stringContaining("/dashboard/magic?token=") }),
+      }),
+      expect.anything()
+    );
+  });
+
+  it("is case-insensitive", async () => {
+    await routeRegisteredUser(ctx(textMsg("Dashboard")), buyerParty());
+
+    expect(queueAdd).toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({
+        content: expect.objectContaining({ body: expect.stringContaining("/dashboard/magic?token=") }),
+      }),
+      expect.anything()
+    );
+  });
+});

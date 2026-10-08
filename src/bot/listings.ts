@@ -16,6 +16,7 @@ import { enqueueReply, buildButtons, buildText } from "./helpers";
 import { extractIntent, type ExtractedIntent, type DraftState } from "./extractor";
 import { allowLLMCall } from "./rate-limit";
 import { runMatchingForListing, runMatchingForRequirement, handleBuyerInterested } from "./matching";
+import { buildMagicLink } from "@/lib/magic-link";
 import { BTN, extractText, extractButtonId, type BotContext } from "./onboarding";
 
 const MAX_LISTING_PHOTOS = 5;
@@ -36,6 +37,20 @@ export async function routeRegisteredUser(ctx: BotContext, party: Party): Promis
 
   const text = extractText(ctx.parsed).trim();
   if (!text) return;
+
+  if (text.toLowerCase() === "dashboard" && (party.role === "SELLER" || party.role === "BUYER")) {
+    const link = buildMagicLink(party.id, party.role);
+    await enqueueReply({
+      organizationId: ctx.orgId,
+      conversationId: ctx.conversation.id,
+      to: ctx.contact.waPhone,
+      content: buildText(
+        `📊 Apna dashboard dekhne ke liye ye link kholiye (15 min tak valid hai):\n${link}`
+      ),
+      dedupeKey: `dashboard_link_${ctx.parsed.providerId}_${party.id}`,
+    });
+    return;
+  }
 
   if (!(await allowLLMCall(party.id))) {
     await enqueueReply({

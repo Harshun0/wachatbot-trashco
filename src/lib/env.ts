@@ -49,6 +49,12 @@ const envSchema = z.object({
   WA_TEMPLATE_MATCH_SELLER: z.string().optional(),
   WA_TEMPLATE_LANGUAGE: z.string().default("en_US"),
 
+  // Phase 4 — dashboard
+  // Signs session cookies and magic-link tokens. Generate with: openssl rand -hex 32
+  SESSION_SECRET: z.string().min(16, "SESSION_SECRET must be at least 16 chars"),
+  // Public base URL used to build magic links sent over WhatsApp, e.g. https://your-app.onrender.com
+  APP_URL: z.string().min(1, "APP_URL is required").default("http://localhost:3000"),
+
   // Runtime
   NODE_ENV: z
     .enum(["development", "test", "production"])

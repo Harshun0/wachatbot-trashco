@@ -344,7 +344,7 @@ async function sendRegisteredMenu(ctx: BotContext, party: Party): Promise<void> 
     conversationId: ctx.conversation.id,
     to: ctx.contact.waPhone,
     content: buildText(
-      `Namaste ${party.name ?? "dost"}! 👋\n\nAap humare paas *${role}* registered hain.\n\n${action}\n\n_Profile dobara set karni ho to 'restart' likhiye._`
+      `Namaste ${party.name ?? "dost"}! 👋\n\nAap humare paas *${role}* registered hain.\n\n${action}\n\n_'dashboard' likhiye apna web dashboard link paane ke liye, ya 'restart' profile dobara set karne ke liye._`
     ),
     dedupeKey: `menu_${ctx.parsed.providerId}_${party.id}`,
   });
