@@ -15,6 +15,7 @@ import { getStorage } from "@/lib/storage";
 import { enqueueReply, buildButtons, buildText } from "./helpers";
 import { extractIntent, type ExtractedIntent, type DraftState } from "./extractor";
 import { allowLLMCall } from "./rate-limit";
+import { runMatchingForListing, runMatchingForRequirement, handleBuyerInterested } from "./matching";
 import { BTN, extractText, extractButtonId, type BotContext } from "./onboarding";
 
 const MAX_LISTING_PHOTOS = 5;
@@ -107,6 +108,12 @@ export async function routeRegisteredUser(ctx: BotContext, party: Party): Promis
 // ─── Button handling ──────────────────────────────────────────────────────────
 
 async function handleButton(ctx: BotContext, party: Party, buttonId: string): Promise<boolean> {
+  if (buttonId.startsWith(BTN.MATCH_INTERESTED_PREFIX)) {
+    const matchId = buttonId.slice(BTN.MATCH_INTERESTED_PREFIX.length);
+    await handleBuyerInterested(ctx.orgId, matchId, ctx.parsed.providerId);
+    return true;
+  }
+
   switch (buttonId) {
     case BTN.LISTING_PUBLISH: {
       const listing = await getDraftListing(ctx.orgId, party.id);
@@ -307,6 +314,12 @@ async function publishListing(ctx: BotContext, party: Party, listing: Listing): 
     ),
     dedupeKey: `listing_published_${ctx.parsed.providerId}_${listing.id}`,
   });
+
+  try {
+    await runMatchingForListing(ctx.orgId, updated);
+  } catch (err) {
+    console.error("[Matching] failed for listing", { code: updated.code, err: (err as Error).message });
+  }
 }
 
 async function closeListing(
@@ -417,6 +430,12 @@ async function handleBuyerMessage(
   }
 
   await sendRequirementSummary(ctx, party, requirement);
+
+  try {
+    await runMatchingForRequirement(ctx.orgId, requirement);
+  } catch (err) {
+    console.error("[Matching] failed for requirement", { id: requirement.id, err: (err as Error).message });
+  }
 }
 
 async function sendRequirementSummary(ctx: BotContext, party: Party, req: Requirement): Promise<void> {

@@ -49,6 +49,9 @@ export const BTN = {
   MENU_MY_LISTINGS:   "menu_my_listings",
   MENU_REQUEST_PRODUCT: "menu_request_product",
   MENU_MY_REQUESTS:   "menu_my_requests",
+
+  // Phase 3 — matching. Interested button id is "match_interested_<matchId>".
+  MATCH_INTERESTED_PREFIX: "match_interested_",
 } as const;
 
 // ─── Entry point (called from worker) ────────────────────────────────────────

@@ -40,6 +40,15 @@ const envSchema = z.object({
   // Max LLM calls per party per minute — avoids cost spikes from one chatty user
   LLM_MAX_PER_MINUTE: z.coerce.number().int().min(1).default(10),
 
+  // Phase 3 — matching alerts
+  // Max match alert messages sent to a single party per day
+  ALERT_MAX_PER_DAY: z.coerce.number().int().min(1).default(20),
+  // Approved Meta template names used to notify a party OUTSIDE the 24h window.
+  // Required only once you have real matches firing outside the service window.
+  WA_TEMPLATE_MATCH_BUYER: z.string().optional(),
+  WA_TEMPLATE_MATCH_SELLER: z.string().optional(),
+  WA_TEMPLATE_LANGUAGE: z.string().default("en_US"),
+
   // Runtime
   NODE_ENV: z
     .enum(["development", "test", "production"])

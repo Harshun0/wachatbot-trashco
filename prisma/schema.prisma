@@ -27,6 +27,7 @@ model Organization {
   parties       Party[]
   listings      Listing[]
   requirements  Requirement[]
+  matches       Match[]
 
   @@map("organizations")
 }
@@ -296,6 +297,7 @@ model Listing {
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sellerParty  Party         @relation(fields: [sellerPartyId], references: [id], onDelete: Cascade)
   media        ListingMedia[]
+  matches      Match[]
 
   @@unique([organizationId, code])
   @@index([organizationId])
@@ -340,6 +342,7 @@ model Requirement {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   buyerParty   Party        @relation(fields: [buyerPartyId], references: [id], onDelete: Cascade)
+  matches      Match[]
 
   @@index([organizationId])
   @@index([organizationId, status])
@@ -350,6 +353,31 @@ model Requirement {
 enum RequirementStatus {
   OPEN
   CLOSED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Matching — Phase 3
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Match {
+  id              String    @id @default(cuid())
+  organizationId  String
+  listingId       String
+  requirementId   String
+  notifiedSellerAt DateTime?
+  notifiedBuyerAt  DateTime?
+  buyerInterestedAt DateTime?
+  createdAt       DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  listing      Listing      @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  requirement  Requirement  @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  @@unique([listingId, requirementId])
+  @@index([organizationId])
+  @@index([listingId])
+  @@index([requirementId])
+  @@map("matches")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
