@@ -58,6 +58,8 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   const signature = request.headers.get("x-hub-signature-256") ?? undefined;
 
+  console.info(`[Webhook] POST received, ${rawBody.length} bytes, signature=${signature ? "yes" : "no"}`);
+
   // 2. Verify signature — reject immediately, Meta will not retry 403s
   const provider = getProvider();
   const { valid } = await provider.verifyWebhook({ signature, rawBody });
