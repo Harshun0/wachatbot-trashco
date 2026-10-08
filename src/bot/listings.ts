@@ -50,7 +50,7 @@ export async function routeRegisteredUser(ctx: BotContext, party: Party): Promis
 
   const draft =
     party.role === "SELLER"
-      ? await getDraftOrOpenListing(ctx.orgId, party.id)
+      ? await getDraftListing(ctx.orgId, party.id)
       : await getOpenRequirement(ctx.orgId, party.id);
 
   const extracted = await extractIntent({
@@ -117,7 +117,17 @@ async function handleButton(ctx: BotContext, party: Party, buttonId: string): Pr
   switch (buttonId) {
     case BTN.LISTING_PUBLISH: {
       const listing = await getDraftListing(ctx.orgId, party.id);
-      if (listing) await publishListing(ctx, party, listing);
+      if (listing) {
+        await publishListing(ctx, party, listing);
+      } else {
+        await enqueueReply({
+          organizationId: ctx.orgId,
+          conversationId: ctx.conversation.id,
+          to: ctx.contact.waPhone,
+          content: buildText("Ye listing already publish ho chuki hai ya mili nahi. 'My listings' bhejke check kar lijiye."),
+          dedupeKey: `listing_publish_notfound_${ctx.parsed.providerId}_${party.id}`,
+        });
+      }
       return true;
     }
     case BTN.LISTING_ADD_PHOTO: {

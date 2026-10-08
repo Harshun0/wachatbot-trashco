@@ -292,6 +292,40 @@ describe("Seller flow — Publish button", () => {
       expect.anything()
     );
   });
+
+  it("no DRAFT found (already published) → replies instead of staying silent", async () => {
+    listing.findFirst.mockResolvedValue(null);
+
+    await routeRegisteredUser(ctx(btnMsg("listing_publish", "Publish")), sellerParty());
+
+    expect(listing.update).not.toHaveBeenCalled();
+    expect(queueAdd).toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({ content: expect.objectContaining({ body: expect.stringContaining("already") }) }),
+      expect.anything()
+    );
+  });
+
+  it("seller already has an OPEN listing and sends a new product message → creates a NEW draft, doesn't mutate the OPEN one (regression)", async () => {
+    // getDraftListing (strict DRAFT) must return null even though an OPEN listing exists —
+    // routeRegisteredUser must not fall back to the OPEN listing here.
+    listing.findFirst.mockResolvedValue(null);
+    listing.count.mockResolvedValue(1); // one existing (OPEN) listing in the org
+    listing.findUnique.mockResolvedValue(null); // LST-0002 is free
+    const newDraft = {
+      id: "listing_2", code: "LST-0002", product: "steel", category: null,
+      quantity: null, unit: null, pricePerUnit: null, location: null, status: "DRAFT",
+    };
+    listing.create.mockResolvedValue(newDraft);
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "create_listing", product: "steel" }));
+
+    await routeRegisteredUser(ctx(textMsg("50 ton steel bechna hai")), sellerParty());
+
+    expect(listing.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ code: "LST-0002", product: "steel" }) })
+    );
+    expect(listing.update).not.toHaveBeenCalled();
+  });
 });
 
 // ─── 6. Close listing ─────────────────────────────────────────────────────────
