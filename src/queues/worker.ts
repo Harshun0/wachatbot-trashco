@@ -172,23 +172,20 @@ export async function processInboundMessage(
 }
 
 async function upsertContact(orgId: string, waPhone: string) {
-  try {
-    return await prisma.contact.create({
-      data: {
-        organizationId: orgId,
-        waPhone,
-        optInSource: "INBOUND_MESSAGE",
-        // Fix (baad mein wala): scope = "service" per spec AC14
-        // "all" → "service" (transactional only; offers need explicit opt-in)
-        optInScope: "service",
-      },
-    });
-  } catch (err) {
-    if (!isPrismaError(err, "P2002")) throw err;
-    return prisma.contact.findUniqueOrThrow({
-      where: { organizationId_waPhone: { organizationId: orgId, waPhone } },
-    });
-  }
+  // Use upsert so we never hit P2002 — create if new, return existing if not.
+  return prisma.contact.upsert({
+    where: { organizationId_waPhone: { organizationId: orgId, waPhone } },
+    create: {
+      organizationId: orgId,
+      waPhone,
+      optInSource: "INBOUND_MESSAGE",
+      optInScope: "service",
+    },
+    update: {
+      // Keep existing opt-in data — only update timestamp on repeated contact
+      updatedAt: new Date(),
+    },
+  });
 }
 
 // ─── Status update processing ─────────────────────────────────────────────────

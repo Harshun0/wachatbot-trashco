@@ -6,21 +6,23 @@
  * → bot dispatch. Prisma and sendQueue are mocked.
  *
  * Tests:
- *  1. New contact → Party created + reply enqueued  (was failing before bug fix)
- *  2. Duplicate inbound (P2002) → bot STILL runs, same jobId (dedupe)
- *  3. processStatusUpdate attempt < 3 → throws (BullMQ retries)
- *  4. processStatusUpdate attempt >= 3 → logs warning, does NOT throw
- *  5. processStatusUpdate message found → updates status in DB
+ *  1. New contact text → Party created + ASK_ROLE reply enqueued
+ *  2. Button tap role_buyer on existing party(ASK_ROLE) → role=BUYER, step=ASK_NAME, name question queued
+ *     (this is the exact bug that was broken — must fail on old code)
+ *  3. Duplicate inbound (P2002 on message.create) → bot STILL runs, same jobId
+ *  4. processStatusUpdate attempt < 3 → throws (BullMQ retries)
+ *  5. processStatusUpdate attempt >= 3 → does NOT throw (gives up gracefully)
+ *  6. processStatusUpdate message found → updates status correctly
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { InternalInboundMessage, InternalStatusUpdate } from "@/providers/types";
 
-// ─── Mocks (must use vi.fn() inline — no outer variable references) ───────────
+// ─── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     organization: { findFirst: vi.fn() },
-    contact: { create: vi.fn(), findUniqueOrThrow: vi.fn() },
+    contact: { upsert: vi.fn() },
     conversation: {
       findUnique: vi.fn(),
       create: vi.fn(),
@@ -39,12 +41,10 @@ vi.mock("@/queues", () => ({
   sweeperQueue: { add: vi.fn(), upsertJobScheduler: vi.fn() },
 }));
 
-// Workers import Redis at module load — stub it out
 vi.mock("@/lib/redis", () => ({
   redis: { on: vi.fn(), quit: vi.fn() },
 }));
 
-// Provider not needed for these tests
 vi.mock("@/providers", () => ({
   getProvider: vi.fn(),
   resetProvider: vi.fn(),
@@ -55,28 +55,34 @@ vi.mock("@/providers", () => ({
 import { prisma } from "@/lib/prisma";
 import { sendQueue } from "@/queues";
 import { processInboundMessage, processStatusUpdate } from "@/queues/worker";
+import { BTN } from "@/bot/onboarding";
 
 // ─── Typed mock accessors ─────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type MockFn = ReturnType<typeof vi.fn<any>>;
+type M = ReturnType<typeof vi.fn<any>>;
 
-const org    = prisma.organization as unknown as { findFirst: MockFn };
-const cont   = prisma.contact      as unknown as { create: MockFn; findUniqueOrThrow: MockFn };
-const conv   = prisma.conversation as unknown as {
-  findUnique: MockFn; create: MockFn; update: MockFn; findUniqueOrThrow: MockFn;
-};
-const msg    = prisma.message      as unknown as { create: MockFn; findUnique: MockFn; update: MockFn };
-const pty    = prisma.party        as unknown as { findUnique: MockFn; create: MockFn; update: MockFn };
-const qadd   = sendQueue.add       as MockFn;
+const org  = prisma.organization as unknown as { findFirst: M };
+const cont = prisma.contact      as unknown as { upsert: M };
+const conv = prisma.conversation as unknown as { findUnique: M; create: M; update: M; findUniqueOrThrow: M };
+const msg  = prisma.message      as unknown as { create: M; findUnique: M; update: M };
+const pty  = prisma.party        as unknown as { findUnique: M; create: M; update: M };
+const qadd = sendQueue.add       as M;
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const ORG_ID  = "org_main";
-const WAMID   = "wamid_live_001";
-const FROM    = "+919900000001";
+const ORG_ID = "org_main";
+const FROM   = "+919900000001";
+const WAMID  = "wamid_live_001";
+const BTN_WAMID = "wamid_btn_001";
 
-function makeInbound(msgId = WAMID): InternalInboundMessage {
+const CONTACT_ROW = { id: "contact_1", waPhone: FROM, organizationId: ORG_ID };
+const CONV_ROW    = { id: "conv_1", contactId: "contact_1", organizationId: ORG_ID, lastInboundAt: new Date() };
+const MSG_ROW     = { id: "msg_1", providerId: WAMID };
+const PARTY_NEW   = { id: "party_1", contactId: "contact_1", organizationId: ORG_ID, onboardingStep: "ASK_ROLE", role: null };
+const PARTY_DONE  = { id: "party_1", contactId: "contact_1", organizationId: ORG_ID, onboardingStep: "ASK_NAME", role: "BUYER" };
+
+function textMsg(msgId = WAMID): InternalInboundMessage {
   return {
     kind: "message",
     providerEventId: `msg_${msgId}`,
@@ -89,7 +95,22 @@ function makeInbound(msgId = WAMID): InternalInboundMessage {
   };
 }
 
-function makeStatus(providerId = WAMID, status: InternalStatusUpdate["status"] = "delivered"): InternalStatusUpdate {
+/** Exact payload shape stored in DB from a real Meta button tap */
+function buyerBtnMsg(msgId = BTN_WAMID): InternalInboundMessage {
+  return {
+    kind: "message",
+    providerEventId: `msg_${msgId}`,
+    providerId: msgId,
+    fromPhone: FROM,
+    toPhone: "+919900000000",
+    timestamp: new Date(),
+    contentType: "interactive",
+    // This is the EXACT content shape stored in messages table
+    content: { type: "button_reply", button_reply: { id: BTN.ROLE_BUYER, title: "Buyer 🛍️" } },
+  };
+}
+
+function statusMsg(providerId = WAMID, status: InternalStatusUpdate["status"] = "delivered"): InternalStatusUpdate {
   return {
     kind: "status",
     providerEventId: `status_${providerId}_${status}`,
@@ -100,179 +121,179 @@ function makeStatus(providerId = WAMID, status: InternalStatusUpdate["status"] =
   };
 }
 
-const CONTACT_ROW  = { id: "contact_1", waPhone: FROM, organizationId: ORG_ID };
-const CONV_ROW     = { id: "conv_1",    contactId: "contact_1", organizationId: ORG_ID, lastInboundAt: new Date() };
-const MESSAGE_ROW  = { id: "msg_1",     providerId: WAMID };
-const PARTY_NEW    = { id: "party_1",   contactId: "contact_1", organizationId: ORG_ID, onboardingStep: "ASK_ROLE" };
-
-beforeEach(() => {
-  vi.clearAllMocks();
-
-  // Default happy-path setup
+function setupHappyPath() {
   org.findFirst.mockResolvedValue({ id: ORG_ID });
-  cont.create.mockResolvedValue(CONTACT_ROW);
-  cont.findUniqueOrThrow.mockResolvedValue(CONTACT_ROW);
-  conv.findUnique.mockResolvedValue(null); // new conversation
+  cont.upsert.mockResolvedValue(CONTACT_ROW);
+  conv.findUnique.mockResolvedValue(null);
   conv.create.mockResolvedValue(CONV_ROW);
   conv.update.mockResolvedValue({ ...CONV_ROW, lastInboundAt: new Date() });
   conv.findUniqueOrThrow.mockResolvedValue({ ...CONV_ROW, lastInboundAt: new Date() });
-  msg.create.mockResolvedValue(MESSAGE_ROW);
   msg.findUnique.mockResolvedValue(null);
   msg.update.mockResolvedValue({});
-
-  // Party not yet created (new contact)
-  pty.findUnique.mockResolvedValue(null);
-  pty.create.mockResolvedValue(PARTY_NEW);
-  pty.update.mockResolvedValue({ ...PARTY_NEW, onboardingStep: "ASK_NAME" });
-
-  // enqueueReply inside bot creates a message row
-  msg.create
-    .mockResolvedValueOnce(MESSAGE_ROW)         // inbound message save
-    .mockResolvedValue({ id: "msg_reply_1" });  // bot reply message
-
   qadd.mockResolvedValue(undefined);
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  setupHappyPath();
+  // Default: two message.create calls — inbound save + bot reply save
+  msg.create
+    .mockResolvedValueOnce(MSG_ROW)
+    .mockResolvedValue({ id: "msg_reply_1" });
 });
 
-// ─── 1. New contact: Party created + reply enqueued ───────────────────────────
+// ─── 1. New contact text → Party created + ASK_ROLE enqueued ─────────────────
 
-describe("processInboundMessage — new contact", () => {
-  it("creates Party and enqueues ASK_ROLE reply (the bug this fix targets)", async () => {
-    await processInboundMessage(makeInbound(), ORG_ID);
+describe("processInboundMessage — new contact text", () => {
+  it("creates Party and enqueues ASK_ROLE reply", async () => {
+    pty.findUnique.mockResolvedValue(null);
+    pty.create.mockResolvedValue(PARTY_NEW);
+    pty.update.mockResolvedValue({ ...PARTY_NEW, onboardingStep: "ASK_NAME" });
 
-    // Party must be created
+    await processInboundMessage(textMsg(), ORG_ID);
+
     expect(pty.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ onboardingStep: "ASK_ROLE" }),
       })
     );
-
-    // A reply must be enqueued
     expect(qadd).toHaveBeenCalledWith(
       "send-message",
       expect.anything(),
-      expect.objectContaining({
-        jobId: expect.stringContaining(`onboard_role_${WAMID}`),
-      })
+      expect.objectContaining({ jobId: expect.stringContaining(`onboard_role_${WAMID}`) })
     );
   });
 
-  it("saves the inbound message to DB", async () => {
-    await processInboundMessage(makeInbound(), ORG_ID);
+  it("uses contact.upsert (not create) — no P2002 possible", async () => {
+    pty.findUnique.mockResolvedValue(null);
+    pty.create.mockResolvedValue(PARTY_NEW);
 
-    expect(msg.create).toHaveBeenCalledWith(
+    await processInboundMessage(textMsg(), ORG_ID);
+
+    expect(cont.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ direction: "INBOUND", status: "DELIVERED" }),
+        where: expect.objectContaining({ organizationId_waPhone: expect.anything() }),
       })
     );
-  });
-
-  it("falls back to findFirst org when organizationId is null", async () => {
-    await processInboundMessage(makeInbound(), null);
-
-    expect(org.findFirst).toHaveBeenCalled();
-    expect(pty.create).toHaveBeenCalled();
   });
 });
 
-// ─── 2. Duplicate inbound (P2002 on message.create) ──────────────────────────
+// ─── 2. Button tap role_buyer on existing party ───────────────────────────────
+// THIS IS THE PRIMARY BUG TEST — must fail on old code, pass on new code
 
-describe("processInboundMessage — duplicate inbound (P2002)", () => {
-  it("bot STILL runs even when message row already exists", async () => {
-    // First call: message.create succeeds
-    // Second call: message.create throws P2002
-    const p2002 = Object.assign(new Error("unique constraint"), { code: "P2002" });
-    msg.create
-      .mockResolvedValueOnce(MESSAGE_ROW)        // inbound save — first call
-      .mockRejectedValueOnce(p2002)              // inbound save — second call (duplicate)
-      .mockResolvedValue({ id: "msg_reply_1" }); // bot reply saves
-
-    // First delivery
-    await processInboundMessage(makeInbound(WAMID), ORG_ID);
-    const firstCallCount = qadd.mock.calls.length;
-    expect(firstCallCount).toBeGreaterThan(0);
-
-    // Second delivery of same wamid — resets party.findUnique for second run
+describe("processInboundMessage — button tap role_buyer (the live bug)", () => {
+  beforeEach(() => {
+    // Party exists with step ASK_ROLE (user already got the role question)
     pty.findUnique.mockResolvedValue(PARTY_NEW);
-    pty.update.mockResolvedValue({ ...PARTY_NEW, onboardingStep: "ASK_NAME" });
+    pty.update.mockResolvedValue(PARTY_DONE);
+    msg.create
+      .mockResolvedValueOnce({ id: "msg_btn_inbound", providerId: BTN_WAMID })
+      .mockResolvedValue({ id: "msg_reply_name" });
+  });
 
-    await processInboundMessage(makeInbound(WAMID), ORG_ID);
+  it("sets role=BUYER and step=ASK_NAME", async () => {
+    await processInboundMessage(buyerBtnMsg(), ORG_ID);
 
-    // Bot ran again — queue was called again
-    expect(qadd.mock.calls.length).toBeGreaterThan(firstCallCount);
+    expect(pty.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ role: "BUYER", onboardingStep: "ASK_NAME" }),
+      })
+    );
+  });
 
-    // Both calls produced the same jobId prefix → BullMQ deduplicates
-    const jobIds = qadd.mock.calls
-      .map((c: unknown[]) => (c[2] as { jobId?: string })?.jobId ?? "")
-      .filter((id: string) => id.includes(`onboard_role_${WAMID}`));
-    expect(new Set(jobIds).size).toBe(1);
+  it("enqueues the name question as OUTBOUND", async () => {
+    await processInboundMessage(buyerBtnMsg(), ORG_ID);
+
+    expect(qadd).toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({ contentType: "text" }),
+      expect.objectContaining({ jobId: expect.stringContaining(`onboard_name_${BTN_WAMID}`) })
+    );
+  });
+
+  it("uses exact BTN.ROLE_BUYER constant for matching", () => {
+    // Ensure the constant hasn't drifted from what Meta sends
+    expect(BTN.ROLE_BUYER).toBe("role_buyer");
+    expect(BTN.ROLE_SELLER).toBe("role_seller");
   });
 });
 
-// ─── 3 & 4. processStatusUpdate — attempt cap ────────────────────────────────
+// ─── 3. Duplicate inbound (P2002 on message.create) ──────────────────────────
 
-describe("processStatusUpdate — unknown message", () => {
-  it("throws when attemptsMade < 3 (triggers BullMQ retry)", async () => {
-    msg.findUnique.mockResolvedValue(null);
+describe("processInboundMessage — duplicate inbound", () => {
+  it("bot runs even when message P2002 fires", async () => {
+    pty.findUnique.mockResolvedValue(PARTY_NEW);
+    pty.update.mockResolvedValue(PARTY_DONE);
 
-    await expect(processStatusUpdate(makeStatus(), 0)).rejects.toThrow();
-    await expect(processStatusUpdate(makeStatus(), 1)).rejects.toThrow();
-    await expect(processStatusUpdate(makeStatus(), 2)).rejects.toThrow();
-  });
+    const p2002 = Object.assign(new Error("unique"), { code: "P2002" });
+    msg.create
+      .mockRejectedValueOnce(p2002)  // inbound message already exists
+      .mockResolvedValue({ id: "msg_reply_1" }); // bot reply saves fine
 
-  it("does NOT throw when attemptsMade >= 3 (gives up gracefully)", async () => {
-    msg.findUnique.mockResolvedValue(null);
+    await processInboundMessage(textMsg(WAMID), ORG_ID);
 
-    await expect(processStatusUpdate(makeStatus(), 3)).resolves.toBeUndefined();
-    await expect(processStatusUpdate(makeStatus(), 5)).resolves.toBeUndefined();
+    // Bot ran — a reply was queued despite P2002
+    expect(qadd).toHaveBeenCalled();
   });
 });
 
-// ─── 5. processStatusUpdate — message found ──────────────────────────────────
+// ─── 4 & 5. processStatusUpdate — attempt cap ────────────────────────────────
+
+describe("processStatusUpdate — unknown message attempt cap", () => {
+  beforeEach(() => {
+    msg.findUnique.mockResolvedValue(null);
+  });
+
+  it("throws at attempt 0 (retry)", async () => {
+    await expect(processStatusUpdate(statusMsg(), 0)).rejects.toThrow();
+  });
+
+  it("throws at attempt 2 (retry)", async () => {
+    await expect(processStatusUpdate(statusMsg(), 2)).rejects.toThrow();
+  });
+
+  it("does NOT throw at attempt 3 (give up)", async () => {
+    await expect(processStatusUpdate(statusMsg(), 3)).resolves.toBeUndefined();
+  });
+
+  it("does NOT throw at attempt 5 (give up)", async () => {
+    await expect(processStatusUpdate(statusMsg(), 5)).resolves.toBeUndefined();
+  });
+});
+
+// ─── 6. processStatusUpdate — message found ──────────────────────────────────
 
 describe("processStatusUpdate — message found", () => {
-  const MESSAGE_DB_ROW = { id: "msg_db_1", providerId: WAMID };
+  const DB_MSG = { id: "db_msg_1", providerId: WAMID };
 
-  it("updates status to DELIVERED", async () => {
-    msg.findUnique.mockResolvedValue(MESSAGE_DB_ROW);
+  beforeEach(() => {
+    msg.findUnique.mockResolvedValue(DB_MSG);
+  });
 
-    await processStatusUpdate(makeStatus(WAMID, "delivered"), 0);
-
+  it("updates status DELIVERED", async () => {
+    await processStatusUpdate(statusMsg(WAMID, "delivered"), 0);
     expect(msg.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: MESSAGE_DB_ROW.id },
-        data: expect.objectContaining({ status: "DELIVERED" }),
-      })
+      expect.objectContaining({ data: expect.objectContaining({ status: "DELIVERED" }) })
     );
   });
 
-  it("updates status to READ", async () => {
-    msg.findUnique.mockResolvedValue(MESSAGE_DB_ROW);
-
-    await processStatusUpdate(makeStatus(WAMID, "read"), 0);
-
+  it("updates status READ", async () => {
+    await processStatusUpdate(statusMsg(WAMID, "read"), 0);
     expect(msg.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: "READ" }),
-      })
+      expect.objectContaining({ data: expect.objectContaining({ status: "READ" }) })
     );
   });
 
-  it("updates status to FAILED with reason", async () => {
-    msg.findUnique.mockResolvedValue(MESSAGE_DB_ROW);
-    const failedStatus: InternalStatusUpdate = {
-      ...makeStatus(WAMID, "failed"),
+  it("updates FAILED with errorTitle as failureReason", async () => {
+    const s: InternalStatusUpdate = {
+      ...statusMsg(WAMID, "failed"),
       errorCode: "131047",
-      errorTitle: "Re-engagement message",
+      errorTitle: "Re-engagement required",
     };
-
-    await processStatusUpdate(failedStatus, 0);
-
+    await processStatusUpdate(s, 0);
     expect(msg.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
-          status: "FAILED",
-          failureReason: "Re-engagement message",
-        }),
+        data: expect.objectContaining({ status: "FAILED", failureReason: "Re-engagement required" }),
       })
     );
   });

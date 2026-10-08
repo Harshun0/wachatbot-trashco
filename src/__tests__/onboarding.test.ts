@@ -52,7 +52,7 @@ vi.mock("@/queues", () => ({
 // ─── Import mocked modules AFTER vi.mock declarations ────────────────────────
 import { prisma } from "@/lib/prisma";
 import { sendQueue } from "@/queues";
-import { handleOnboarding, extractText, extractButtonId } from "@/bot/onboarding";
+import { handleOnboarding, extractText, extractButtonId, BTN } from "@/bot/onboarding";
 import type { InternalInboundMessage } from "@/providers/types";
 import type { Party } from "@prisma/client";
 
@@ -172,7 +172,7 @@ describe("ASK_ROLE step", () => {
   });
 
   it("role_seller button → sets SELLER + ASK_NAME, enqueues ask_name", async () => {
-    await handleOnboarding(ctx(btnMsg("role_seller", "Seller", "wamid_s1")));
+    await handleOnboarding(ctx(btnMsg(BTN.ROLE_SELLER, "Seller", "wamid_s1")));
 
     expect(party.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -187,7 +187,7 @@ describe("ASK_ROLE step", () => {
   });
 
   it("role_buyer button → sets BUYER + ASK_NAME", async () => {
-    await handleOnboarding(ctx(btnMsg("role_buyer", "Buyer", "wamid_b1")));
+    await handleOnboarding(ctx(btnMsg(BTN.ROLE_BUYER, "Buyer", "wamid_b1")));
 
     expect(party.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -323,7 +323,7 @@ describe("ASK_ALERTS step", () => {
   });
 
   it("alert_all → alertPreference=ALL + DONE + optInScope=service,alerts", async () => {
-    await handleOnboarding(ctx(btnMsg("alert_all", "All listings", "wamid_al1")));
+    await handleOnboarding(ctx(btnMsg(BTN.ALERT_ALL, "All listings", "wamid_al1")));
 
     expect(party.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -338,7 +338,7 @@ describe("ASK_ALERTS step", () => {
   });
 
   it("alert_match → alertPreference=MATCHING_ONLY", async () => {
-    await handleOnboarding(ctx(btnMsg("alert_match", "Only matching", "wamid_al2")));
+    await handleOnboarding(ctx(btnMsg(BTN.ALERT_MATCH, "Only matching", "wamid_al2")));
 
     expect(party.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -348,7 +348,7 @@ describe("ASK_ALERTS step", () => {
   });
 
   it("alert_none → alertPreference=NONE + optInScope=service", async () => {
-    await handleOnboarding(ctx(btnMsg("alert_none", "No alerts", "wamid_al3")));
+    await handleOnboarding(ctx(btnMsg(BTN.ALERT_NONE, "No alerts", "wamid_al3")));
 
     expect(party.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -417,7 +417,7 @@ describe("Duplicate webhook idempotency", () => {
     party.findUnique.mockResolvedValue(baseParty("ASK_ROLE"));
     party.update.mockResolvedValue(baseParty("ASK_NAME"));
 
-    const msg = btnMsg("role_seller", "Seller", "wamid_dup1");
+    const msg = btnMsg(BTN.ROLE_SELLER, "Seller", "wamid_dup1");
 
     await handleOnboarding(ctx(msg));
     await handleOnboarding(ctx(msg));

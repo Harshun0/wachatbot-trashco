@@ -27,6 +27,18 @@ interface BotContext {
   parsed: InternalInboundMessage;
 }
 
+// ─── Button ID constants — single source of truth ─────────────────────────────
+// These are set when building buttons AND read when parsing button_reply.id.
+// Keep them in sync here rather than as magic strings scattered across handlers.
+
+export const BTN = {
+  ROLE_SELLER:  "role_seller",
+  ROLE_BUYER:   "role_buyer",
+  ALERT_ALL:    "alert_all",
+  ALERT_MATCH:  "alert_match",
+  ALERT_NONE:   "alert_none",
+} as const;
+
 // ─── Entry point (called from worker) ────────────────────────────────────────
 
 export async function handleOnboarding(ctx: BotContext): Promise<void> {
@@ -81,20 +93,10 @@ export async function handleOnboarding(ctx: BotContext): Promise<void> {
 
 async function handleAskRole(ctx: BotContext, party: Party): Promise<void> {
   const buttonId = extractButtonId(ctx.parsed);
-
-  if (buttonId === "role_seller" || buttonId === "role_buyer") {
-    const role = buttonId === "role_seller" ? "SELLER" : "BUYER";
-    await prisma.party.update({
-      where: { id: party.id },
-      data: { role, onboardingStep: "ASK_NAME" },
-    });
-    await sendAskName(ctx, party.id);
-    return;
-  }
-
-  // Not a button reply — could be a text like "seller" or "buyer"
   const text = extractText(ctx.parsed).toLowerCase();
-  if (text.includes("seller") || text.includes("sell")) {
+
+  if (buttonId === BTN.ROLE_SELLER || text.includes("seller") || text.includes("sell")) {
+    console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_ROLE", input: buttonId ?? "text", next: "ASK_NAME/SELLER" });
     await prisma.party.update({
       where: { id: party.id },
       data: { role: "SELLER", onboardingStep: "ASK_NAME" },
@@ -102,7 +104,9 @@ async function handleAskRole(ctx: BotContext, party: Party): Promise<void> {
     await sendAskName(ctx, party.id);
     return;
   }
-  if (text.includes("buyer") || text.includes("buy") || text.includes("khareed")) {
+
+  if (buttonId === BTN.ROLE_BUYER || text.includes("buyer") || text.includes("buy") || text.includes("khareed")) {
+    console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_ROLE", input: buttonId ?? "text", next: "ASK_NAME/BUYER" });
     await prisma.party.update({
       where: { id: party.id },
       data: { role: "BUYER", onboardingStep: "ASK_NAME" },
@@ -111,7 +115,8 @@ async function handleAskRole(ctx: BotContext, party: Party): Promise<void> {
     return;
   }
 
-  // Unexpected — show the question again (first message → also show it)
+  // Unexpected input — repeat the question
+  console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_ROLE", input: buttonId ?? "text", next: "ASK_ROLE(repeat)" });
   await sendAskRole(ctx, party.id);
 }
 
@@ -120,11 +125,11 @@ async function handleAskRole(ctx: BotContext, party: Party): Promise<void> {
 async function handleAskName(ctx: BotContext, party: Party): Promise<void> {
   const rawText = extractText(ctx.parsed).trim();
   if (!rawText) {
+    console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_NAME", input: "empty", next: "ASK_NAME(hint)" });
     await sendAskName(ctx, party.id, true);
     return;
   }
 
-  // Use LLM to extract the name cleanly; fall back to rawText directly
   const extracted = await callLLM<{ name: string }>({
     system:
       "You are a data extractor. The user just provided their name in a WhatsApp message. " +
@@ -135,6 +140,7 @@ async function handleAskName(ctx: BotContext, party: Party): Promise<void> {
   });
 
   const name = extracted?.name ?? rawText;
+  console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_NAME", input: "text", next: "ASK_CITY" });
 
   await prisma.party.update({
     where: { id: party.id },
@@ -148,6 +154,7 @@ async function handleAskName(ctx: BotContext, party: Party): Promise<void> {
 async function handleAskCity(ctx: BotContext, party: Party): Promise<void> {
   const rawText = extractText(ctx.parsed).trim();
   if (!rawText) {
+    console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_CITY", input: "empty", next: "ASK_CITY(hint)" });
     await sendAskCity(ctx, party.id, true);
     return;
   }
@@ -162,6 +169,7 @@ async function handleAskCity(ctx: BotContext, party: Party): Promise<void> {
   });
 
   const city = extracted?.city ?? rawText;
+  console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_CITY", input: "text", next: "ASK_ALERTS" });
 
   await prisma.party.update({
     where: { id: party.id },
@@ -178,14 +186,17 @@ async function handleAskAlerts(ctx: BotContext, party: Party): Promise<void> {
 
   let pref: "ALL" | "MATCHING_ONLY" | "NONE" | null = null;
 
-  if (buttonId === "alert_all" || text.includes("all")) pref = "ALL";
-  else if (buttonId === "alert_match" || text.includes("match") || text.includes("matching")) pref = "MATCHING_ONLY";
-  else if (buttonId === "alert_none" || text.includes("no alert") || text.includes("nahi")) pref = "NONE";
+  if (buttonId === BTN.ALERT_ALL || text.includes("all")) pref = "ALL";
+  else if (buttonId === BTN.ALERT_MATCH || text.includes("match") || text.includes("matching")) pref = "MATCHING_ONLY";
+  else if (buttonId === BTN.ALERT_NONE || text.includes("no alert") || text.includes("nahi")) pref = "NONE";
 
   if (!pref) {
+    console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_ALERTS", input: buttonId ?? "text", next: "ASK_ALERTS(repeat)" });
     await sendAskAlerts(ctx, party.id, true);
     return;
   }
+
+  console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_ALERTS", input: buttonId ?? "text", next: `DONE/${pref}` });
 
   await prisma.party.update({
     where: { id: party.id },
@@ -196,7 +207,6 @@ async function handleAskAlerts(ctx: BotContext, party: Party): Promise<void> {
     },
   });
 
-  // Also update contact optInScope
   await prisma.contact.update({
     where: { id: ctx.contact.id },
     data: { optInScope: pref !== "NONE" ? "service,alerts" : "service" },
@@ -227,8 +237,8 @@ async function sendAskRole(ctx: BotContext, partyId: string): Promise<void> {
     content: buildButtons(
       "Welcome to the marketplace! 🛒\n\nAre you looking to *sell* products or *buy* them?",
       [
-        { id: "role_seller", title: "Seller 🏭" },
-        { id: "role_buyer", title: "Buyer 🛍️" },
+        { id: BTN.ROLE_SELLER, title: "Seller 🏭" },
+        { id: BTN.ROLE_BUYER,  title: "Buyer 🛍️" },
       ],
       "Type 'restart' anytime to start over"
     ),
@@ -271,9 +281,9 @@ async function sendAskAlerts(ctx: BotContext, partyId: string, hint = false): Pr
     conversationId: ctx.conversation.id,
     to: ctx.contact.waPhone,
     content: buildButtons(body, [
-      { id: "alert_all", title: "All listings" },
-      { id: "alert_match", title: "Only matching" },
-      { id: "alert_none", title: "No alerts" },
+      { id: BTN.ALERT_ALL,   title: "All listings" },
+      { id: BTN.ALERT_MATCH, title: "Only matching" },
+      { id: BTN.ALERT_NONE,  title: "No alerts" },
     ]),
     dedupeKey: `onboard_alerts_${ctx.parsed.providerId}_${partyId}`,
   });
