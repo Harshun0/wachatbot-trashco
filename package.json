@@ -17,6 +17,7 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.19.3",
     "bullmq": "^6.3.11",
     "ioredis": "^6.0.0",

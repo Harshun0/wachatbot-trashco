@@ -29,6 +29,15 @@ const envSchema = z.object({
   // Meta Graph API version — default v21.0, set to match your app dashboard
   WA_GRAPH_VERSION: z.string().default("v21.0"),
 
+  // LLM provider — "gemini" | "claude" (future). Default gemini.
+  LLM_PROVIDER: z.enum(["gemini", "claude"]).default("gemini"),
+  // Gemini API key (required when LLM_PROVIDER=gemini)
+  GEMINI_API_KEY: z.string().optional(),
+  // Claude API key (required when LLM_PROVIDER=claude)
+  CLAUDE_API_KEY: z.string().optional(),
+  // LLM model override — defaults chosen per provider if not set
+  LLM_MODEL: z.string().optional(),
+
   // Runtime
   NODE_ENV: z
     .enum(["development", "test", "production"])

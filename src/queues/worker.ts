@@ -12,6 +12,7 @@ import { redis } from "@/lib/redis";
 import { prisma } from "@/lib/prisma";
 import { getProvider } from "@/providers";
 import { ProviderError } from "@/providers/types";
+import { handleOnboarding } from "@/bot/onboarding";
 import type { WebhookJobData, SendMessageJobData, SweeperJobData } from "./index";
 import type { TemplateContent, InteractiveContent } from "@/providers/types";
 
@@ -140,6 +141,27 @@ async function processInboundMessage(
       return;
     }
     throw err;
+  }
+
+  // ── Bot dispatch ────────────────────────────────────────────────────────────
+  // Fetch the updated conversation (has fresh lastInboundAt)
+  const freshConversation = await prisma.conversation.findUniqueOrThrow({
+    where: { id: conversation.id },
+  });
+
+  try {
+    await handleOnboarding({
+      orgId,
+      contact: { id: contact.id, waPhone: contact.waPhone },
+      conversation: {
+        id: freshConversation.id,
+        lastInboundAt: freshConversation.lastInboundAt,
+      },
+      parsed,
+    });
+  } catch (err) {
+    // Bot errors must never crash the worker — log and continue
+    console.error("[WebhookWorker] Bot error (non-fatal):", (err as Error).message);
   }
 }
 

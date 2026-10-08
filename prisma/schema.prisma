@@ -24,6 +24,7 @@ model Organization {
   messages      Message[]
   webhookEvents WebhookEvent[]
   auditEvents   AuditEvent[]
+  parties       Party[]
 
   @@map("organizations")
 }
@@ -93,6 +94,7 @@ model Contact {
   organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   company       Company?       @relation(fields: [companyId], references: [id])
   conversations Conversation[]
+  party         Party?
 
   @@unique([organizationId, waPhone])
   @@index([organizationId])
@@ -219,6 +221,51 @@ model WebhookEvent {
   @@index([organizationId])
   @@index([processed])
   @@map("webhook_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Marketplace bot
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Party {
+  id               String           @id @default(cuid())
+  organizationId   String
+  contactId        String           @unique  // one Party per Contact
+  role             PartyRole?                // null until onboarding sets it
+  name             String?
+  city             String?
+  company          String?
+  onboardingStep   OnboardingStep   @default(ASK_ROLE)
+  alertPreference  AlertPreference  @default(NONE)
+  alertsOptedInAt  DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, role])
+  @@map("parties")
+}
+
+enum PartyRole {
+  BUYER
+  SELLER
+}
+
+enum OnboardingStep {
+  ASK_ROLE
+  ASK_NAME
+  ASK_CITY
+  ASK_ALERTS
+  DONE
+}
+
+enum AlertPreference {
+  ALL
+  MATCHING_ONLY
+  NONE
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
