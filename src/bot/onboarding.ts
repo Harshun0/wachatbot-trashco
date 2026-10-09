@@ -35,6 +35,7 @@ export interface BotContext {
 export const BTN = {
   ROLE_SELLER:  "role_seller",
   ROLE_BUYER:   "role_buyer",
+  ROLE_BOTH:    "role_both",
   ALERT_ALL:    "alert_all",
   ALERT_MATCH:  "alert_match",
   ALERT_NONE:   "alert_none",
@@ -49,6 +50,7 @@ export const BTN = {
   MENU_MY_LISTINGS:   "menu_my_listings",
   MENU_REQUEST_PRODUCT: "menu_request_product",
   MENU_MY_REQUESTS:   "menu_my_requests",
+  MENU_MY_ACTIVITY:   "menu_my_activity",
 
   // Phase 3 — matching. Interested button id is "match_interested_<matchId>".
   MATCH_INTERESTED_PREFIX: "match_interested_",
@@ -109,6 +111,16 @@ export async function handleOnboarding(ctx: BotContext): Promise<void> {
 async function handleAskRole(ctx: BotContext, party: Party): Promise<void> {
   const buttonId = extractButtonId(ctx.parsed);
   const text = extractText(ctx.parsed).toLowerCase();
+
+  if (buttonId === BTN.ROLE_BOTH || text.includes("dono") || text.includes("both")) {
+    console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_ROLE", input: buttonId ?? "text", next: "ASK_NAME/BOTH" });
+    await prisma.party.update({
+      where: { id: party.id },
+      data: { role: "BOTH", onboardingStep: "ASK_NAME" },
+    });
+    await sendAskName(ctx, party.id);
+    return;
+  }
 
   if (buttonId === BTN.ROLE_SELLER || text.includes("seller") || text.includes("sell")) {
     console.info("[Onboarding] step", { contactId: party.contactId, step: "ASK_ROLE", input: buttonId ?? "text", next: "ASK_NAME/SELLER" });
@@ -256,6 +268,7 @@ async function sendAskRole(ctx: BotContext, partyId: string): Promise<void> {
       [
         { id: BTN.ROLE_SELLER, title: "Bechna hai 🏭" },
         { id: BTN.ROLE_BUYER,  title: "Khareedna hai 🛍️" },
+        { id: BTN.ROLE_BOTH,   title: "Dono 🔄" },
       ],
       "Kabhi bhi 'restart' likh ke dobara shuru kar sakte hain"
     ),
@@ -306,8 +319,23 @@ async function sendAskAlerts(ctx: BotContext, partyId: string, hint = false): Pr
   });
 }
 
+function roleLabel(role: Party["role"]): string {
+  if (role === "SELLER") return "Seller";
+  if (role === "BUYER") return "Buyer";
+  return "Seller + Buyer";
+}
+
+function doneAction(role: Party["role"]): string {
+  if (role === "SELLER") {
+    return "Ab batayiye — aapko kya bechna hai, kitni quantity aur kitne mein? Bas product bata dijiye, baaki main ek-ek karke pooch lunga! 📦";
+  }
+  if (role === "BUYER") {
+    return "Ab batayiye — aapko kya chahiye aur kitne mein? Product bata dijiye, main turant request bana dunga aur match milte hi batadunga! 🔍";
+  }
+  return "Ab batayiye — aapko kya bechna hai ya kya chahiye? Dono kaam kar sakta hoon — bas product bata dijiye! 📦🔍";
+}
+
 async function sendDone(ctx: BotContext, party: Party): Promise<void> {
-  const role = party.role === "SELLER" ? "Seller" : "Buyer";
   const alertMsg =
     party.alertPreference === "ALL"
       ? "Aapko har nayi listing ka alert milega."
@@ -321,30 +349,29 @@ async function sendDone(ctx: BotContext, party: Party): Promise<void> {
     to: ctx.contact.waPhone,
     content: buildText(
       `✅ Perfect, ${party.name ?? "dost"}! Aapka profile ban gaya.\n\n` +
-        `*Role:* ${role}\n` +
+        `*Role:* ${roleLabel(party.role)}\n` +
         `*City:* ${party.city ?? "—"}\n` +
         `*Alerts:* ${alertMsg}\n\n` +
-        (party.role === "SELLER"
-          ? "Ab batayiye — aapko kya bechna hai, kitni quantity aur kitne mein? Bas product bata dijiye, baaki main ek-ek karke pooch lunga! 📦"
-          : "Ab batayiye — aapko kya chahiye aur kitne mein? Product bata dijiye, main turant request bana dunga aur match milte hi batadunga! 🔍")
+        doneAction(party.role)
     ),
     dedupeKey: `onboard_done_${ctx.parsed.providerId}_${party.id}`,
   });
 }
 
 async function sendRegisteredMenu(ctx: BotContext, party: Party): Promise<void> {
-  const role = party.role === "SELLER" ? "Seller" : "Buyer";
   const action =
     party.role === "SELLER"
       ? "Bas batayiye aapko kya bechna hai, kitni quantity aur kitne mein — main list kar dunga!"
-      : "Batayiye aapko kya chahiye aur kitne mein — main dhoondh ke laata hoon!";
+      : party.role === "BUYER"
+      ? "Batayiye aapko kya chahiye aur kitne mein — main dhoondh ke laata hoon!"
+      : "Batayiye aapko kya bechna hai ya kya chahiye — main dono kaam kar sakta hoon!";
 
   await enqueueReply({
     organizationId: ctx.orgId,
     conversationId: ctx.conversation.id,
     to: ctx.contact.waPhone,
     content: buildText(
-      `Namaste ${party.name ?? "dost"}! 👋\n\nAap humare paas *${role}* registered hain.\n\n${action}\n\n_'dashboard' likhiye apna web dashboard link paane ke liye, ya 'restart' profile dobara set karne ke liye._`
+      `Namaste ${party.name ?? "dost"}! 👋\n\nAap humare paas *${roleLabel(party.role)}* registered hain.\n\n${action}\n\n_'dashboard' likhiye apna web dashboard link paane ke liye, ya 'restart' profile dobara set karne ke liye._`
     ),
     dedupeKey: `menu_${ctx.parsed.providerId}_${party.id}`,
   });

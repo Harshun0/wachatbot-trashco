@@ -42,7 +42,8 @@ export interface DraftState {
 
 export interface ExtractorInput {
   text: string;
-  role: "SELLER" | "BUYER";
+  /** BOTH = this user can both sell and buy — infer which one from the message itself. */
+  role: "SELLER" | "BUYER" | "BOTH";
   /** The seller's open DRAFT listing or buyer's in-progress requirement, if any. */
   draft?: DraftState | null;
   /** Last ~6 messages of the conversation, oldest first, plain text. */
@@ -67,11 +68,12 @@ Return ONLY JSON matching this exact shape, no prose, no markdown fences:
 }
 
 Rules:
-- "create_listing": seller describing a new product to sell (first mention of a product).
-- "add_details": seller or buyer adding quantity/price/location/etc to an existing draft.
-- "create_requirement": buyer describing something they want to buy.
+- "create_listing": seller describing a new product to sell (first mention of a product, or a DIFFERENT product than the current draft).
+- "add_details": adding quantity/price/location/etc to the EXISTING draft — only use this when the message is clearly continuing the SAME product as "Current draft" below (or mentions no product at all, just a number/unit/location). If the message names a different product than the current draft, use "create_listing" or "create_requirement" instead, never "add_details".
+- "create_requirement": buyer describing something they want to buy (first mention of a product, or a DIFFERENT product than the current draft).
 - "close_listing": user says things like "close LST-0001", "sold", "band karo" — extract listingCode if present.
 - "other": greetings, menu requests, anything that isn't listing/requirement related.
+- When role is "BOTH": decide "create_listing" vs "create_requirement" purely from the message's own language — selling words ("bechna", "sell", "available") mean create_listing; buying words ("chahiye", "khareedna", "buy", "need") mean create_requirement.
 - Never invent a value. If a field isn't mentioned in this message, set it to null.
 - "price" means price per unit, extract only the number (no currency symbols).
 - "quantity" is a plain number (convert words like "sau" = 100 if unambiguous, otherwise null).

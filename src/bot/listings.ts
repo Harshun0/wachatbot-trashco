@@ -15,7 +15,7 @@ import { getStorage } from "@/lib/storage";
 import { enqueueReply, buildButtons, buildText } from "./helpers";
 import { extractIntent, type ExtractedIntent, type DraftState } from "./extractor";
 import { allowLLMCall } from "./rate-limit";
-import { runMatchingForListing, runMatchingForRequirement, handleBuyerInterested } from "./matching";
+import { runMatchingForListing, runMatchingForRequirement, handleBuyerInterested, productsMatch } from "./matching";
 import { buildMagicLink } from "@/lib/magic-link";
 import { BTN, extractText, extractButtonId, type BotContext } from "./onboarding";
 
@@ -38,7 +38,7 @@ export async function routeRegisteredUser(ctx: BotContext, party: Party): Promis
   const text = extractText(ctx.parsed).trim();
   if (!text) return;
 
-  if (text.toLowerCase() === "dashboard" && (party.role === "SELLER" || party.role === "BUYER")) {
+  if (text.toLowerCase() === "dashboard" && party.role) {
     const link = buildMagicLink(party.id, party.role);
     await enqueueReply({
       organizationId: ctx.orgId,
@@ -63,15 +63,16 @@ export async function routeRegisteredUser(ctx: BotContext, party: Party): Promis
     return;
   }
 
-  const draft =
-    party.role === "SELLER"
-      ? await getDraftListing(ctx.orgId, party.id)
-      : await getOpenRequirement(ctx.orgId, party.id);
+  // BOTH users can have a draft listing AND an open requirement at once —
+  // prefer whichever is actively incomplete as the extractor's context.
+  const draftListing = party.role !== "BUYER" ? await getDraftListing(ctx.orgId, party.id) : null;
+  const openRequirement = party.role !== "SELLER" ? await getOpenRequirement(ctx.orgId, party.id) : null;
+  const draftForExtractor = draftListing ?? openRequirement;
 
   const extracted = await extractIntent({
     text,
-    role: party.role as "SELLER" | "BUYER",
-    draft: draft ? toDraftState(draft) : null,
+    role: party.role as "SELLER" | "BUYER" | "BOTH",
+    draft: draftForExtractor ? toDraftState(draftForExtractor) : null,
     recentMessages: await getRecentMessages(ctx.conversation.id),
   });
 
@@ -97,21 +98,26 @@ export async function routeRegisteredUser(ctx: BotContext, party: Party): Promis
 
   switch (extracted.intent) {
     case "create_listing":
-    case "add_details":
-      if (party.role === "SELLER") {
-        await handleSellerMessage(ctx, party, extracted, draft as Listing | null);
-      } else {
-        await handleBuyerMessage(ctx, party, extracted, draft as Requirement | null);
-      }
+      await handleSellerMessage(ctx, party, extracted, draftListing);
       break;
     case "create_requirement":
-      await handleBuyerMessage(ctx, party, extracted, draft as Requirement | null);
+      await handleBuyerMessage(ctx, party, extracted, openRequirement);
       break;
-    case "close_listing":
-      if (party.role === "SELLER") {
-        await closeListing(ctx, party, extracted);
+    case "add_details": {
+      // Ambiguous for BOTH — prefer whichever side actually has something in progress.
+      const actingSeller = party.role === "SELLER" || (party.role === "BOTH" && Boolean(draftListing));
+      if (actingSeller) {
+        await handleSellerMessage(ctx, party, extracted, draftListing);
       } else {
+        await handleBuyerMessage(ctx, party, extracted, openRequirement);
+      }
+      break;
+    }
+    case "close_listing":
+      if (party.role === "BUYER") {
         await sendRoleMismatch(ctx, party);
+      } else {
+        await closeListing(ctx, party, extracted);
       }
       break;
     case "other":
@@ -216,6 +222,10 @@ async function handleButton(ctx: BotContext, party: Party, buttonId: string): Pr
     case BTN.MENU_MY_REQUESTS:
       await sendMyRequests(ctx, party);
       return true;
+    case BTN.MENU_MY_ACTIVITY:
+      await sendMyListings(ctx, party);
+      await sendMyRequests(ctx, party);
+      return true;
     default:
       return false;
   }
@@ -231,9 +241,15 @@ async function handleSellerMessage(
 ): Promise<void> {
   let listing = draft;
 
-  if (!listing) {
+  // A different product than the current draft means a NEW listing, not an
+  // edit of the old one — otherwise a seller starting a second product while
+  // the first draft is still open would silently overwrite it.
+  const isDifferentProduct =
+    listing && extracted.product && !productsMatch(listing.product, extracted.product);
+
+  if (!listing || isDifferentProduct) {
     if (!extracted.product) {
-      await sendNeedProduct(ctx, party);
+      await sendNeedProduct(ctx, party, "sell");
       return;
     }
     const code = await generateListingCode(ctx.orgId);
@@ -423,9 +439,15 @@ async function handleBuyerMessage(
 ): Promise<void> {
   let requirement = existing;
 
-  if (!requirement) {
+  // A different product than the current open requirement means a NEW
+  // requirement, not an edit of the old one — otherwise asking about a
+  // second product while the first is still open would silently overwrite it.
+  const isDifferentProduct =
+    requirement && extracted.product && !productsMatch(requirement.product, extracted.product);
+
+  if (!requirement || isDifferentProduct) {
     if (!extracted.product) {
-      await sendNeedProduct(ctx, party);
+      await sendNeedProduct(ctx, party, "buy");
       return;
     }
     requirement = await prisma.requirement.create({
@@ -517,9 +539,15 @@ async function handleOtherIntent(ctx: BotContext, party: Party): Promise<void> {
           { id: BTN.MENU_LIST_PRODUCT, title: "List a product" },
           { id: BTN.MENU_MY_LISTINGS, title: "My listings" },
         ]
-      : [
+      : party.role === "BUYER"
+      ? [
           { id: BTN.MENU_REQUEST_PRODUCT, title: "Request a product" },
           { id: BTN.MENU_MY_REQUESTS, title: "My requests" },
+        ]
+      : [
+          { id: BTN.MENU_LIST_PRODUCT, title: "List a product" },
+          { id: BTN.MENU_REQUEST_PRODUCT, title: "Request a product" },
+          { id: BTN.MENU_MY_ACTIVITY, title: "My activity" },
         ];
 
   await enqueueReply({
@@ -558,9 +586,9 @@ async function sendRephrase(ctx: BotContext, party: Party): Promise<void> {
   });
 }
 
-async function sendNeedProduct(ctx: BotContext, party: Party): Promise<void> {
+async function sendNeedProduct(ctx: BotContext, party: Party, mode: "sell" | "buy"): Promise<void> {
   const prompt =
-    party.role === "SELLER"
+    mode === "sell"
       ? "Pehle batayiye aapko kya product bechna hai, jaise *cement*."
       : "Pehle batayiye aapko kya product chahiye, jaise *cement*.";
   await enqueueReply({
@@ -575,7 +603,7 @@ async function sendNeedProduct(ctx: BotContext, party: Party): Promise<void> {
 // ─── Photo handling ───────────────────────────────────────────────────────────
 
 async function handleIncomingPhoto(ctx: BotContext, party: Party): Promise<void> {
-  if (party.role !== "SELLER") return;
+  if (party.role === "BUYER") return; // only sellers (and BOTH) attach photos to listings
 
   const listing = await getDraftOrOpenListing(ctx.orgId, party.id);
   if (!listing) {

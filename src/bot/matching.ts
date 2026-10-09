@@ -18,7 +18,7 @@ import { BTN } from "./onboarding";
 
 // ─── Matching criteria ─────────────────────────────────────────────────────────
 
-function productsMatch(a: string, b: string): boolean {
+export function productsMatch(a: string, b: string): boolean {
   const na = a.trim().toLowerCase();
   const nb = b.trim().toLowerCase();
   return na === nb || na.includes(nb) || nb.includes(na);

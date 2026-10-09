@@ -216,6 +216,26 @@ describe("ASK_ROLE step", () => {
     );
   });
 
+  it("role_both button → sets BOTH + ASK_NAME", async () => {
+    await handleOnboarding(ctx(btnMsg(BTN.ROLE_BOTH, "Dono", "wamid_both1")));
+
+    expect(party.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ role: "BOTH", onboardingStep: "ASK_NAME" }),
+      })
+    );
+  });
+
+  it("text 'dono' → sets BOTH + ASK_NAME", async () => {
+    await handleOnboarding(ctx(textMsg("dono karna hai", "wamid_both2")));
+
+    expect(party.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ role: "BOTH" }),
+      })
+    );
+  });
+
   it("unexpected text → no update, enqueues ASK_ROLE question again", async () => {
     await handleOnboarding(ctx(textMsg("hmm not sure", "wamid_unk")));
 

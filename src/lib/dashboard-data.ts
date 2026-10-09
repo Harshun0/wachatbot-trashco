@@ -50,8 +50,9 @@ export async function getMatches(orgId: string, opts: { sellerPartyId?: string; 
 }
 
 export async function getParties(orgId: string, role: "SELLER" | "BUYER") {
+  // BOTH parties act as both — include them in each list.
   return prisma.party.findMany({
-    where: { organizationId: orgId, role },
+    where: { organizationId: orgId, role: { in: [role, "BOTH"] } },
     orderBy: { createdAt: "desc" },
     include: { contact: { select: { waPhone: true } } },
     take: 200,

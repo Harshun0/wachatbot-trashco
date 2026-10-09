@@ -10,7 +10,7 @@ import { env } from "./env";
 
 export const SESSION_COOKIE = "wacrm_session";
 
-export type SessionRole = "ADMIN" | "AGENT" | "SELLER" | "BUYER";
+export type SessionRole = "ADMIN" | "AGENT" | "SELLER" | "BUYER" | "BOTH";
 
 export interface SessionPayload {
   role: SessionRole;

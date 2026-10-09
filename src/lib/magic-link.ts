@@ -8,7 +8,7 @@ import { createToken, verifyToken, type SessionRole } from "./session";
 
 const MAGIC_LINK_TTL_SECONDS = 15 * 60; // 15 minutes — single use, redeemed immediately
 
-export function buildMagicLink(partyId: string, role: Extract<SessionRole, "SELLER" | "BUYER">): string {
+export function buildMagicLink(partyId: string, role: Extract<SessionRole, "SELLER" | "BUYER" | "BOTH">): string {
   const token = createToken({ role, partyId }, MAGIC_LINK_TTL_SECONDS);
   const url = new URL("/dashboard/magic", env.APP_URL);
   url.searchParams.set("token", token);

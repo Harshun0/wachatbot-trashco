@@ -108,6 +108,10 @@ function buyerParty(overrides: Partial<Party> = {}): Party {
   return { ...sellerParty({ role: "BUYER", ...overrides }) };
 }
 
+function bothParty(overrides: Partial<Party> = {}): Party {
+  return { ...sellerParty({ role: "BOTH", ...overrides }) };
+}
+
 function textMsg(text: string, msgId = "wamid_1"): InternalInboundMessage {
   return {
     kind: "message",
@@ -548,6 +552,188 @@ describe("Dashboard link keyword", () => {
       expect.objectContaining({
         content: expect.objectContaining({ body: expect.stringContaining("/dashboard/magic?token=") }),
       }),
+      expect.anything()
+    );
+  });
+});
+
+// ─── 14. Product-mismatch regression ──────────────────────────────────────────
+// A second, different product mentioned while a draft/open row already exists
+// must create a NEW row, never silently overwrite the old one's product.
+
+describe("Product mismatch — new product while one is already in progress", () => {
+  it("seller: existing DRAFT is 'cement', message mentions 'steel' → creates a new listing, doesn't touch the cement draft", async () => {
+    const cementDraft = {
+      id: "listing_1", code: "LST-0001", product: "cement",
+      quantity: null, unit: null, pricePerUnit: null, location: null, status: "DRAFT",
+    };
+    listing.findFirst.mockResolvedValue(cementDraft);
+    listing.count.mockResolvedValue(1);
+    listing.findUnique.mockResolvedValue(null);
+    const steelDraft = { id: "listing_2", code: "LST-0002", product: "steel", quantity: null, unit: null, pricePerUnit: null, location: null, status: "DRAFT" };
+    listing.create.mockResolvedValue(steelDraft);
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "add_details", product: "steel" }));
+
+    await routeRegisteredUser(ctx(textMsg("50 ton steel bhi bechna hai")), sellerParty());
+
+    expect(listing.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ product: "steel", code: "LST-0002" }) })
+    );
+    expect(listing.update).not.toHaveBeenCalled();
+  });
+
+  it("buyer: existing OPEN requirement is 'Pp bags', message mentions 'plastic bottle' → creates a new requirement, doesn't rename the old one", async () => {
+    const ppBagsReq = {
+      id: "req_1", product: "Pp bags", quantity: null, unit: null, maxPrice: null, location: null, status: "OPEN",
+    };
+    requirement.findFirst.mockResolvedValue(ppBagsReq);
+    const bottleReq = { id: "req_2", product: "plastic bottle", quantity: 10, unit: "tons", maxPrice: null, location: null, status: "OPEN" };
+    requirement.create.mockResolvedValue(bottleReq);
+    mockedExtractIntent.mockResolvedValue(
+      extracted({ intent: "create_requirement", product: "plastic bottle", quantity: 10, unit: "tons" })
+    );
+
+    await routeRegisteredUser(ctx(textMsg("mujhe 10 tons plastic bottle khareedna hai")), buyerParty());
+
+    expect(requirement.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ product: "plastic bottle" }) })
+    );
+    expect(requirement.update).not.toHaveBeenCalled();
+    // Reply must reflect the NEW product, not the stale "Pp bags"
+    expect(queueAdd).toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({
+        content: expect.objectContaining({
+          interactive: expect.objectContaining({ body: { text: expect.stringContaining("plastic bottle") } }),
+        }),
+      }),
+      expect.anything()
+    );
+  });
+
+  it("buyer: same product mentioned again → still updates the existing requirement (not a regression)", async () => {
+    const existing = { id: "req_1", product: "cement", quantity: null, unit: null, maxPrice: null, location: null, status: "OPEN" };
+    requirement.findFirst.mockResolvedValue(existing);
+    requirement.update.mockResolvedValue({ ...existing, quantity: 50, unit: "ton" });
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "add_details", quantity: 50, unit: "ton" }));
+
+    await routeRegisteredUser(ctx(textMsg("50 ton")), buyerParty());
+
+    expect(requirement.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "req_1" } })
+    );
+    expect(requirement.create).not.toHaveBeenCalled();
+  });
+});
+
+// ─── 15. BOTH role ─────────────────────────────────────────────────────────────
+
+describe("BOTH role", () => {
+  it("create_listing intent → routes to seller handler even for a BOTH party", async () => {
+    listing.findFirst.mockResolvedValue(null);
+    requirement.findFirst.mockResolvedValue(null);
+    listing.count.mockResolvedValue(0);
+    listing.findUnique.mockResolvedValue(null);
+    listing.create.mockResolvedValue({ id: "listing_1", code: "LST-0001", product: "cement", quantity: null, unit: null, pricePerUnit: null, location: null, status: "DRAFT" });
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "create_listing", product: "cement" }));
+
+    await routeRegisteredUser(ctx(textMsg("cement bechna hai")), bothParty());
+
+    expect(listing.create).toHaveBeenCalled();
+    expect(requirement.create).not.toHaveBeenCalled();
+  });
+
+  it("create_requirement intent → routes to buyer handler even for a BOTH party", async () => {
+    listing.findFirst.mockResolvedValue(null);
+    requirement.findFirst.mockResolvedValue(null);
+    requirement.create.mockResolvedValue({ id: "req_1", product: "steel", quantity: null, unit: null, maxPrice: null, location: null, status: "OPEN" });
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "create_requirement", product: "steel" }));
+
+    await routeRegisteredUser(ctx(textMsg("mujhe steel chahiye")), bothParty());
+
+    expect(requirement.create).toHaveBeenCalled();
+    expect(listing.create).not.toHaveBeenCalled();
+  });
+
+  it("add_details with an active DRAFT listing → treated as the seller side", async () => {
+    const draft = { id: "listing_1", code: "LST-0001", product: "cement", quantity: null, unit: null, pricePerUnit: null, location: null, status: "DRAFT" };
+    listing.findFirst.mockResolvedValue(draft);
+    requirement.findFirst.mockResolvedValue(null);
+    listing.update.mockResolvedValue({ ...draft, quantity: 100, unit: "ton" });
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "add_details", quantity: 100, unit: "ton" }));
+
+    await routeRegisteredUser(ctx(textMsg("100 ton")), bothParty());
+
+    expect(listing.update).toHaveBeenCalled();
+    expect(requirement.update).not.toHaveBeenCalled();
+    expect(requirement.create).not.toHaveBeenCalled();
+  });
+
+  it("add_details with no draft listing but an open requirement → treated as the buyer side", async () => {
+    listing.findFirst.mockResolvedValue(null);
+    const req = { id: "req_1", product: "cement", quantity: null, unit: null, maxPrice: null, location: null, status: "OPEN" };
+    requirement.findFirst.mockResolvedValue(req);
+    requirement.update.mockResolvedValue({ ...req, quantity: 50, unit: "ton" });
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "add_details", quantity: 50, unit: "ton" }));
+
+    await routeRegisteredUser(ctx(textMsg("50 ton")), bothParty());
+
+    expect(requirement.update).toHaveBeenCalled();
+    expect(listing.update).not.toHaveBeenCalled();
+  });
+
+  it("'other' intent → 3-button menu with List/Request/My activity", async () => {
+    listing.findFirst.mockResolvedValue(null);
+    requirement.findFirst.mockResolvedValue(null);
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "other" }));
+
+    await routeRegisteredUser(ctx(textMsg("thanks")), bothParty());
+
+    expect(queueAdd).toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({
+        content: expect.objectContaining({
+          interactive: expect.objectContaining({
+            action: expect.objectContaining({
+              buttons: expect.arrayContaining([
+                expect.objectContaining({ reply: expect.objectContaining({ title: "List a product" }) }),
+                expect.objectContaining({ reply: expect.objectContaining({ title: "Request a product" }) }),
+                expect.objectContaining({ reply: expect.objectContaining({ title: "My activity" }) }),
+              ]),
+            }),
+          }),
+        }),
+      }),
+      expect.anything()
+    );
+  });
+
+  it("image upload is allowed for a BOTH party (not silently dropped)", async () => {
+    const openListing = { id: "listing_1", code: "LST-0001", status: "OPEN" };
+    listing.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(openListing);
+    listingMedia.count.mockResolvedValue(0);
+    listingMedia.create.mockResolvedValue({ id: "media_1" });
+    mockedGetProvider.mockReturnValue({
+      downloadMedia: vi.fn().mockResolvedValue({ buffer: Buffer.from("x"), mimeType: "image/jpeg" }),
+    });
+    mockedGetStorage.mockReturnValue(null);
+
+    await routeRegisteredUser(ctx(imageMsg("wamedia_both")), bothParty());
+
+    expect(listingMedia.create).toHaveBeenCalled();
+  });
+
+  it("no role mismatch reply for create_requirement or create_listing", async () => {
+    listing.findFirst.mockResolvedValue(null);
+    requirement.findFirst.mockResolvedValue(null);
+    requirement.create.mockResolvedValue({ id: "req_1", product: "steel", quantity: null, unit: null, maxPrice: null, location: null, status: "OPEN" });
+    mockedExtractIntent.mockResolvedValue(extracted({ intent: "create_requirement", product: "steel" }));
+
+    await routeRegisteredUser(ctx(textMsg("mujhe steel chahiye")), bothParty());
+
+    expect(queueAdd).not.toHaveBeenCalledWith(
+      "send-message",
+      expect.objectContaining({ content: expect.objectContaining({ body: expect.stringContaining("registered hain, isliye") }) }),
       expect.anything()
     );
   });

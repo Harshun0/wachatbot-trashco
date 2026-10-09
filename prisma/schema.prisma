@@ -258,6 +258,7 @@ model Party {
 enum PartyRole {
   BUYER
   SELLER
+  BOTH
 }
 
 enum OnboardingStep {

@@ -5,7 +5,7 @@
  * Protected by INTERNAL_API_KEY header (same key as /api/messages/send).
  *
  * Query params:
- *   role=BUYER|SELLER          — filter by role
+ *   role=BUYER|SELLER|BOTH     — filter by role
  *   step=ASK_ROLE|...DONE      — filter by onboarding step
  *   page=1                     — 1-indexed page (25 per page)
  */
@@ -20,7 +20,7 @@ export const runtime = "nodejs";
 const PAGE_SIZE = 25;
 
 const querySchema = z.object({
-  role: z.enum(["BUYER", "SELLER"]).optional(),
+  role: z.enum(["BUYER", "SELLER", "BOTH"]).optional(),
   step: z
     .enum(["ASK_ROLE", "ASK_NAME", "ASK_CITY", "ASK_ALERTS", "DONE"])
     .optional(),
